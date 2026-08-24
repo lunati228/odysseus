@@ -267,9 +267,76 @@
     vertical-align: -3px;
   }
   @keyframes login-spin { to { transform: rotate(360deg); } }
+  .privacy-workspace-control {
+    position: fixed;
+    top: max(0.75rem, env(safe-area-inset-top));
+    right: 0.75rem;
+    z-index: 100000;
+    display: grid;
+    grid-template-columns: minmax(0, auto) auto;
+    grid-template-areas: "current switch" "transport switch";
+    align-items: center;
+    gap: 0.125rem 0.75rem;
+    max-width: calc(100vw - 1.5rem);
+    padding: 0.5rem;
+    color: var(--fg);
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px color-mix(in srgb, #000 24%, transparent);
+    backdrop-filter: blur(10px);
+    font: 400 0.6875rem/1.2 'Fira Code', monospace;
+  }
+  .privacy-workspace-current { grid-area: current; min-width: 0; display: flex; align-items: baseline; gap: 0.375rem; }
+  .privacy-workspace-eyebrow { opacity: 0.58; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.625rem; }
+  #privacy-workspace-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; }
+  .privacy-workspace-transport { grid-area: transport; min-height: 0.825rem; opacity: 0.78; }
+  .privacy-workspace-control[data-state="ready"] .privacy-workspace-transport::before { content: "✓ "; }
+  .privacy-workspace-control[data-state="unavailable"] .privacy-workspace-transport::before,
+  .privacy-workspace-control[data-state="unknown"] .privacy-workspace-transport::before { content: "! "; }
+  .privacy-workspace-switch {
+    grid-area: switch;
+    min-width: 0;
+    padding: 0.375rem 0.625rem;
+    color: var(--fg);
+    background: color-mix(in srgb, var(--fg) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent);
+    border-radius: 6px;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .privacy-workspace-switch:hover:not(:disabled) { background: color-mix(in srgb, var(--fg) 12%, transparent); }
+  .privacy-workspace-switch:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+  .privacy-workspace-switch:disabled { opacity: 0.48; cursor: default; }
+  .privacy-workspace-switch-prefix { display: block; opacity: 0.58; font-size: 0.625rem; }
+  #privacy-workspace-switch-label { display: block; font-weight: 600; white-space: nowrap; }
+  @media (max-width: 768px) {
+    .privacy-workspace-control {
+      top: max(0.5rem, env(safe-area-inset-top));
+      right: auto;
+      left: 0.5rem;
+      max-width: calc(100vw - 4rem);
+      padding: 0.375rem;
+      gap: 0.125rem 0.5rem;
+    }
+    .privacy-workspace-eyebrow, .privacy-workspace-switch-prefix { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    .privacy-workspace-switch { min-height: 44px; padding: 0.375rem 0.5rem; }
+  }
 </style>
 </head>
 <body>
+<aside class="privacy-workspace-control" id="privacy-workspace-control" data-profile="unknown" data-state="loading" aria-label="Workspace status and switcher">
+  <span class="privacy-workspace-current">
+    <span class="privacy-workspace-eyebrow">Workspace</span>
+    <strong id="privacy-workspace-label" aria-current="page">Unknown</strong>
+  </span>
+  <span class="privacy-workspace-transport" id="privacy-workspace-transport" role="status" aria-live="polite">Checking workspace status</span>
+  <button class="privacy-workspace-switch" id="privacy-workspace-switch" type="button" aria-label="Switch workspace" disabled>
+    <span class="privacy-workspace-switch-prefix">Switch to</span>
+    <span id="privacy-workspace-switch-label">Unavailable</span>
+  </button>
+</aside>
 <main class="card">
   <h1 class="logo">
     <svg class="logo-boat" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M16 4L16 22L6 22Z" fill="currentColor"/><path d="M16 8L16 22L24 22Z" fill="currentColor" opacity="0.6"/><path d="M4 24Q10 20 16 24Q22 28 28 24" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg><span>Odysseus</span>
@@ -594,6 +661,7 @@ if (window.visualViewport) {
   });
 }
 </script>
+<script type="module" src="/static/js/privacyWorkspace.js"></script>
 <script type="module" nonce="{{CSP_NONCE}}">
 // Drive the login page's bg effect off the user's saved theme. The
 // sync bootstrap above already set the body class + effect CSS vars so

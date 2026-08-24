@@ -242,6 +242,8 @@ def _get_checked(
     still be connected to before any post-hoc host check. Following redirects by
     hand lets us re-validate every hop, closing that blind-SSRF gap.
     """
+    from src.privacy_policy import require_capability  # PRV-003
+    require_capability("skill-import")
     current = url
     for _ in range(_MAX_FETCH_REDIRECTS + 1):
         pinned_ips = _resolve_and_check_url(current)

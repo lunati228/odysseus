@@ -12,6 +12,7 @@ from sqlalchemy.ext.declarative import declarative_base, declared_attr
 from sqlalchemy.orm import relationship, sessionmaker, backref
 
 from src.runtime_paths import get_app_root
+from src.privacy_mode import is_privacy_mode, validate_database_url
 from core.platform_compat import safe_chmod, IS_WINDOWS
 
 logger = logging.getLogger(__name__)
@@ -69,8 +70,17 @@ def _normalize_sqlite_url(url: str) -> str:
     )
 
 
-# Get database URL from environment, default to SQLite in DATA_DIR
-DATABASE_URL = _normalize_sqlite_url(os.getenv("DATABASE_URL", _default_database_url()))
+# Get database URL from environment, default to SQLite in DATA_DIR. Privacy
+# validates the raw value first so a relative SQLite URL cannot be silently
+# rebased into the repository.
+_configured_database_url = os.getenv("DATABASE_URL", _default_database_url())
+if is_privacy_mode():
+    DATABASE_URL = validate_database_url(
+        _configured_database_url,
+        data_root=DATA_DIR,
+    )
+else:
+    DATABASE_URL = _normalize_sqlite_url(_configured_database_url)
 
 # Create engine
 engine = create_engine(

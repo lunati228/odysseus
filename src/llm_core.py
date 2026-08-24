@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import HTTPException
 from typing import Optional, Dict, List, Tuple
 from src.model_context import get_context_length, DEFAULT_CONTEXT, is_local_endpoint
+from src.privacy_policy import validate_model_endpoint
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -856,6 +857,7 @@ def _remember_kimi_code_user_agent(url: str, user_agent: str) -> None:
 
 def apply_kimi_code_headers(headers: Optional[Dict], url: str) -> Dict[str, str]:
     """Pick a Kimi Code User-Agent (cached probe when possible)."""
+    url = validate_model_endpoint(url, label="model helper URL")
     h = dict(headers or {})
     if not _is_kimi_code_url(url):
         return h
@@ -887,6 +889,7 @@ def apply_kimi_code_headers(headers: Optional[Dict], url: str) -> Dict[str, str]
 
 async def apply_kimi_code_headers_async(client, headers: Optional[Dict], url: str) -> Dict[str, str]:
     """Pick a Kimi Code User-Agent without blocking the event loop."""
+    url = validate_model_endpoint(url, label="async model helper URL")
     h = dict(headers or {})
     if not _is_kimi_code_url(url):
         return h
@@ -916,6 +919,7 @@ async def apply_kimi_code_headers_async(client, headers: Optional[Dict], url: st
 
 
 def httpx_get_kimi_aware(url: str, headers: Optional[Dict], **kwargs):
+    url = validate_model_endpoint(url, label="model GET URL")
     h = apply_kimi_code_headers(headers, url)
     if not _is_kimi_code_url(url):
         return httpx.get(url, headers=h, **kwargs)
@@ -932,6 +936,7 @@ def httpx_get_kimi_aware(url: str, headers: Optional[Dict], **kwargs):
 
 
 def httpx_post_kimi_aware(url: str, headers: Optional[Dict], **kwargs):
+    url = validate_model_endpoint(url, label="model POST URL")
     h = apply_kimi_code_headers(headers, url)
     if not _is_kimi_code_url(url):
         return httpx.post(url, headers=h, **kwargs)
@@ -948,6 +953,7 @@ def httpx_post_kimi_aware(url: str, headers: Optional[Dict], **kwargs):
 
 
 async def httpx_post_kimi_aware_async(client, url: str, headers: Optional[Dict], **kwargs):
+    url = validate_model_endpoint(url, label="async model POST URL")
     h = await apply_kimi_code_headers_async(client, headers, url)
     if not _is_kimi_code_url(url):
         return await client.post(url, headers=h, **kwargs)
@@ -1905,6 +1911,9 @@ def list_model_ids(
     endpoint_id: Optional[str] = None,
 ) -> List[str]:
     """List available model IDs from an endpoint."""
+    base_chat_url = validate_model_endpoint(
+        base_chat_url, label="model-list endpoint"
+    )
     cached = _configured_cached_model_ids(base_chat_url, owner=owner, endpoint_id=endpoint_id)
     if cached:
         return cached
@@ -1970,6 +1979,7 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
              max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
              timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None) -> str:
     """Synchronous LLM call with optional prompt type enhancement."""
+    url = validate_model_endpoint(url, label="synchronous model endpoint")
     h = _provider_headers(_detect_provider(url))
     # Tolerate headers that arrive as a JSON string (some sessions stored them
     # double-encoded) — otherwise h.update() throws "dictionary update sequence
@@ -2275,6 +2285,7 @@ async def llm_call_async(
     return_model_metadata: bool = False,
 ) -> str | tuple[str, str]:
     """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging."""
+    url = validate_model_endpoint(url, label="asynchronous model endpoint")
     provider = _detect_provider(url)
     messages_copy = _sanitize_llm_messages(messages)
 
@@ -2561,6 +2572,7 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
                      timeout: int = LLMConfig.STREAM_TIMEOUT, prompt_type: Optional[str] = None,
                      tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
                      tool_choice_none: bool = False, workload: str = "foreground"):
+    url = validate_model_endpoint(url, label="streaming model endpoint")
     target_url = _stream_target_url(url)
     async with _local_model_slot(target_url, model, workload):
         async for chunk in _stream_llm_inner(

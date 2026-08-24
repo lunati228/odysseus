@@ -274,6 +274,8 @@ def setup_embedding_routes():
         # Quick health check
         try:
             import httpx
+            from src.privacy_policy import require_capability  # PRV-003
+            require_capability("hosted-embeddings")
             resp = httpx.post(
                 url,
                 json={"input": ["test"], "model": model or "test"},

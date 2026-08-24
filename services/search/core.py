@@ -17,6 +17,7 @@ from .analytics import (
 from .cache import (
     SEARCH_CACHE_DIR,
     search_cache_index,
+    disk_cache_enabled,
     generate_cache_key,
     cleanup_cache,
 )
@@ -40,6 +41,7 @@ from .content import (
     extract_quotes,
     extract_statistics,
 )
+from src.privacy_mode import is_privacy_mode
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,14 @@ def update_search_config(api_key: str = None, **kwargs):
 
 def _call_provider(provider_name: str, query: str, count: int, time_filter: str = None) -> List[dict]:
     """Call a search provider by name. Returns list of results or empty list."""
+    # Privacy Workspace: every provider below either creates a direct HTTP
+    # client or attaches an account-bound API key, so the whole chain is
+    # replaced by a single Tor-routed one. Imported lazily so the standard
+    # profile never loads the privacy stack.
+    if is_privacy_mode():
+        from .privacy_search import privacy_call_provider
+        return privacy_call_provider(provider_name, query, count, time_filter)
+
     if provider_name == "searxng":
         return searxng_search_api(query, count, time_filter=time_filter)
     elif provider_name == "brave":
@@ -145,8 +155,14 @@ def searxng_search_results(query: str, count: int = 10, time_filter: str = None)
     cache_key = generate_cache_key(f"{query}|{count}|{time_filter}")
     cache_file = SEARCH_CACHE_DIR / f"{cache_key}.cache"
 
+    # PRV-005. The privacy guard inside _call_provider only replaces the leaf
+    # network call; everything around it in this function -- the disk search
+    # cache and the plaintext analytics file -- would still run and would
+    # persist the query and its results at rest inside the vault.
+    cache_and_analytics = disk_cache_enabled()
+
     # Check cache
-    if cache_file.exists():
+    if cache_and_analytics and cache_file.exists():
         try:
             with open(cache_file, "r", encoding="utf-8") as f:
                 cached_data = json.load(f)
@@ -194,6 +210,7 @@ def searxng_search_results(query: str, count: int = 10, time_filter: str = None)
 
     if success:
         results = rank_search_results(query, results)
+    if success and cache_and_analytics:
         try:
             expiry = datetime.now() + _cache_duration_for_query(query)
             cache_data = {

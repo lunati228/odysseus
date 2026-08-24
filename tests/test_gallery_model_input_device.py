@@ -31,4 +31,3 @@ def test_model_inputs_to_device_casts_mps_float64_to_float32():
     assert float_tensor.to_args == ((), {"device": "mps", "dtype": _TorchSentinel.float32})
     assert int_tensor.to_args == (("mps",), {})
     assert result["plain"] is plain_value
-

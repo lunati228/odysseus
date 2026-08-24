@@ -115,6 +115,13 @@ class EmbeddingClient:
             raise
 
     def _post_embeddings(self, batch: List[str]) -> List[List[float]]:
+        # PRV-003/PRV-009. Checked per call, not per client, so a settings
+        # change mid-process cannot move an already-built client off loopback.
+        # A local embedding server stays usable; a hosted one is refused, and
+        # get_embedding_client() catches that and falls back to FastEmbed.
+        from src.privacy_policy import validate_model_endpoint
+
+        validate_model_endpoint(self.url, label="EMBEDDING_URL")
         resp = self._client.post(
             self.url,
             headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
@@ -219,6 +226,13 @@ def _load_persisted_endpoint() -> dict:
             import json
             data = json.loads(open(endpoint_file, encoding="utf-8").read())
             if data.get("url"):
+                # PRV-009: a persisted endpoint is attacker- or history-
+                # controlled input. Validate before it is copied into
+                # os.environ, or a stored hostname/LAN/cloud URL would
+                # silently re-enable non-local embedding after restart.
+                from src.privacy_policy import validate_model_endpoint
+
+                validate_model_endpoint(data["url"], label="persisted EMBEDDING_URL")
                 return data
     except Exception:
         pass

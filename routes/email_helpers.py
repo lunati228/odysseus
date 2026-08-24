@@ -101,6 +101,12 @@ def verify_oauth_state(state: str) -> dict | None:
 
 def _refresh_google_token(account_id: str) -> str | None:
     """Exchange the stored refresh token for a new access token and persist it."""
+    # PRV-003: refuse before the token and account id reach Google. The
+    # process-wide egress chokepoint would also stop this, but a named
+    # capability refusal is the difference between "feature is off" and
+    # "the network is broken".
+    from src.privacy_policy import require_capability
+    require_capability("email-sync")
     import httpx
     from core.database import SessionLocal as _SL, EmailAccount as _EA
     from src.secret_storage import encrypt as _enc, decrypt as _dec

@@ -40,12 +40,32 @@ if os.name == "nt":
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 from dotenv import load_dotenv
+from src.privacy_mode import (
+    build_profile_status,
+    is_privacy_mode,
+    load_profile_dotenv,
+    startup_capability_enabled,
+)
+from src.privacy_egress import install_privacy_egress_guard
+from src.privacy_logging import install_privacy_log_sanitizer
+from src.privacy_routes import PrivacyRoutePolicyMiddleware
 # encoding="utf-8-sig" tolerates a UTF-8 BOM in .env — a common Windows gotcha
 # when the file is saved from Notepad. Without this, the first key parses as
 # "﻿AUTH_ENABLED" instead of "AUTH_ENABLED", so AUTH_ENABLED=false (etc.)
 # is silently ignored and the user is unexpectedly forced to log in (issue #142).
 # utf-8-sig reads plain UTF-8 (no BOM) identically, so this is safe everywhere.
-load_dotenv(encoding="utf-8-sig")
+load_profile_dotenv(load_dotenv, encoding="utf-8-sig")
+
+# PRV-005. The installed manager redirects stderr to a file, so privacy-safe
+# logging must be enforced before any service imports or log handlers exist.
+# No-op in Standard Workspace.
+install_privacy_log_sanitizer()
+
+# PRV-003. Installed here, immediately after the profile environment is known
+# and before any module that could build an HTTP client is imported, so the
+# chokepoint is in place for the whole process lifetime. No-op in the standard
+# profile, where it must not change behavior at all.
+install_privacy_egress_guard()
 
 import asyncio
 import logging
@@ -249,6 +269,10 @@ class _SlowRequestLogMiddleware(_BaseHTTPMiddleware):
 app.add_middleware(_RequestTimeoutMiddleware)
 app.add_middleware(_InteractiveActivityMiddleware)
 app.add_middleware(_SlowRequestLogMiddleware)
+# PRV-003. Auth is added below and therefore remains the outer boundary; once
+# authenticated, Privacy Workspace refuses disabled route families before
+# request bodies, route dependencies, integrations, or subprocesses run.
+app.add_middleware(PrivacyRoutePolicyMiddleware)
 
 # ========= AUTH =========
 from routes.auth_routes import setup_auth_routes, SESSION_COOKIE
@@ -271,9 +295,15 @@ if AUTH_ENABLED:
         "/api/auth/settings",
         "/api/auth/integrations/presets",
         "/api/health",
+        "/api/privacy/status",
         "/api/version",
         "/login",
     }
+    if is_privacy_mode():
+        # The local manager needs a credential-free readiness probe before the
+        # independent Privacy profile has completed first-run account setup.
+        # Privacy readiness redacts paths/errors; Standard keeps its old auth.
+        AUTH_EXEMPT_EXACT.add("/api/ready")
     AUTH_EXEMPT_PREFIXES = ["/static"]
     # Dynamic paths whose own handler proves identity via a path-embedded
     # secret instead of the session/bearer auth. The route handler at
@@ -956,6 +986,12 @@ async def get_version():
 async def health_check() -> Dict[str, str]:
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
+
+@app.get("/api/privacy/status")
+async def privacy_profile_status() -> Dict[str, object]:
+    """Public, non-secret identity/transport state for the fixed UI switch."""
+    return build_profile_status()
+
 @app.post("/api/client-perf")
 async def client_perf(request: Request):
     """Low-volume frontend timing reports for stalls that happen before SSE logs."""
@@ -1058,19 +1094,28 @@ async def _startup_event():
         upload_cleanup_task = asyncio.create_task(upload_cleanup_func())
     # Always-on monitor that auto-continues the agent when a background bash
     # job (#!bg) finishes — re-invokes the turn with the job output.
-    try:
-        from src.bg_monitor import start_bg_monitor
-        _startup_tasks.append(start_bg_monitor())
-    except Exception as _e:
-        logger.warning("Failed to start background-job monitor: %s", _e)
+    if startup_capability_enabled("bg_monitor"):
+        try:
+            from src.bg_monitor import start_bg_monitor
+            _startup_tasks.append(start_bg_monitor())
+        except Exception as _e:
+            logger.warning("Failed to start background-job monitor: %s", _e)
+    else:
+        logger.info("Background-job monitor disabled by Privacy profile policy")
     # MCP servers can be slow or blocked by local tooling. Connect them after
     # the web server is accepting traffic instead of delaying the whole UI.
     async def _startup_mcp_connections():
         try:
+            from src.privacy_mode import is_privacy_mode as _privacy_mcp_check
             from src.builtin_mcp import register_builtin_servers
-            await register_builtin_servers(mcp_manager)
+            await register_builtin_servers(
+                mcp_manager,
+                only_browser=_privacy_mcp_check(),
+            )
         except BaseException as e:
             logger.warning(f"Built-in MCP registration failed (non-critical): {type(e).__name__}: {e}")
+        if _privacy_mcp_check():
+            return
         try:
             await mcp_manager.connect_all_enabled()
         except asyncio.TimeoutError:
@@ -1078,12 +1123,20 @@ async def _startup_event():
         except BaseException as e:
             logger.warning(f"MCP startup failed (non-critical): {type(e).__name__}: {e}")
 
-    _startup_tasks.append(asyncio.create_task(_startup_mcp_connections()))
+    from src.privacy_mode import is_privacy_mode as _privacy_mcp_gate
+    if startup_capability_enabled("mcp_connections") or _privacy_mcp_gate():
+        _startup_tasks.append(asyncio.create_task(_startup_mcp_connections()))
+    else:
+        logger.info("MCP startup disabled by Privacy profile policy")
 
     # Startup warmups are opt-in. They make later requests a little warmer, but
     # they also compete with the first seconds of real UI use on slow or busy
     # machines. Default to clear/idle startup and let requests warm what they use.
-    _startup_warmups_enabled = str(os.getenv("ODYSSEUS_STARTUP_WARMUPS", "")).lower() in {"1", "true", "yes", "on"}
+    _startup_warmups_enabled = (
+        startup_capability_enabled("endpoint_warmups")
+        and str(os.getenv("ODYSSEUS_STARTUP_WARMUPS", "")).lower()
+        in {"1", "true", "yes", "on"}
+    )
     if _startup_warmups_enabled:
         async def _warmup_tool_index():
             try:
@@ -1121,7 +1174,11 @@ async def _startup_event():
     # Keep-alive is opt-in. The ping path performs model discovery, and when
     # stale LAN endpoints are configured it can add periodic backend pressure
     # that delays unrelated UI requests such as Notes/Documents.
-    _keepalive_enabled = str(os.getenv("ODYSSEUS_MODEL_KEEPALIVE", "")).lower() in {"1", "true", "yes", "on"}
+    _keepalive_enabled = (
+        startup_capability_enabled("model_keepalive")
+        and str(os.getenv("ODYSSEUS_MODEL_KEEPALIVE", "")).lower()
+        in {"1", "true", "yes", "on"}
+    )
     if _keepalive_enabled:
         async def _keepalive_loop():
             while True:
@@ -1179,7 +1236,10 @@ async def _startup_event():
 
     # Reconcile built-in tasks before the runner starts. Otherwise legacy
     # scheduled built-ins can fire once before being converted to event tasks.
-    await _ensure_default_tasks()
+    if startup_capability_enabled("default_tasks"):
+        await _ensure_default_tasks()
+    else:
+        logger.info("Default automation task creation disabled by Privacy profile policy")
 
     # Disk-backed skills are not covered by the DB legacy-owner sweep. Repair
     # ownerless or deleted/test-owner SKILL.md files so strict owner filtering
@@ -1207,7 +1267,10 @@ async def _startup_event():
     # deployment where an external worker drives task firing. Mirrors
     # `ODYSSEUS_INPROCESS_POLLERS` from the email pollers.
     _tasks_inprocess = os.environ.get("ODYSSEUS_INPROCESS_TASKS", "1").strip().lower()
-    if _tasks_inprocess not in ("0", "false", "no", "off", ""):
+    if (
+        startup_capability_enabled("task_scheduler")
+        and _tasks_inprocess not in ("0", "false", "no", "off", "")
+    ):
         await task_scheduler.start()
     else:
         logger.info(
@@ -1257,7 +1320,10 @@ async def _startup_event():
             except Exception as e:
                 logger.warning(f"Nightly skill audit failed: {e}")
 
-    _startup_tasks.append(asyncio.create_task(_skill_audit_nightly_loop()))
+    if startup_capability_enabled("nightly_skill_audit"):
+        _startup_tasks.append(asyncio.create_task(_skill_audit_nightly_loop()))
+    else:
+        logger.info("Nightly skill audit disabled by Privacy profile policy")
 
     # Cookbook serve lifecycle — kills scheduler-launched serves whose
     # window-end has passed. Paired with the cookbook_serve builtin
@@ -1265,8 +1331,11 @@ async def _startup_event():
     # something with end_after_min set. Removing this line + the
     # cookbook_serve entry in BUILTIN_ACTIONS + src/cookbook_serve_lifecycle.py
     # removes the feature.
-    from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
-    _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
+    if startup_capability_enabled("cookbook_lifecycle"):
+        from src.cookbook_serve_lifecycle import cookbook_serve_lifecycle_loop
+        _startup_tasks.append(asyncio.create_task(cookbook_serve_lifecycle_loop()))
+    else:
+        logger.info("Cookbook serve lifecycle disabled by Privacy profile policy")
 
     logger.info("Application startup complete")
 

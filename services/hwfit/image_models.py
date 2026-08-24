@@ -171,6 +171,8 @@ def _fetch_hf_image_collection_models() -> list[dict[str, Any]]:
     now = time.time()
     if now - float(_HF_COLLECTION_CACHE.get("ts") or 0) < _HF_COLLECTION_TTL:
         return list(_HF_COLLECTION_CACHE.get("models") or [])
+    from src.privacy_policy import require_capability  # PRV-003
+    require_capability("model-gallery")
     models: list[dict[str, Any]] = []
     for slug, mlx_only in [(slug, False) for slug in HF_IMAGE_COLLECTIONS] + [(slug, True) for slug in HF_MLX_IMAGE_COLLECTIONS]:
         url = f"https://huggingface.co/api/collections/{slug}"
@@ -193,6 +195,8 @@ def _fetch_hf_image_collection_models() -> list[dict[str, Any]]:
 
 def _hf_model_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
     global _HF_SEARCH_DISABLED_UNTIL
+    from src.privacy_policy import require_capability  # PRV-003
+    require_capability("model-gallery")
     now = time.time()
     if now < _HF_SEARCH_DISABLED_UNTIL:
         return []

@@ -13,6 +13,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from src.constants import WEB_FETCH_SOFT_MAX_BYTES, WEB_FETCH_HARD_MAX_BYTES, WEB_FETCH_USER_AGENT
+from src.privacy_mode import is_privacy_mode
 from src import outbound_fetch as _outbound_fetch
 
 from .analytics import RateLimitError, error_logger
@@ -20,6 +21,7 @@ from .cache import (
     CONTENT_CACHE_DIR,
     content_cache_index,
     generate_cache_key,
+    require_disk_cache,
     cleanup_cache,
 )
 
@@ -187,6 +189,17 @@ def fetch_webpage_content(url: str, timeout: int = 5, retry_attempt: int = 0,
     carries ``truncated``/``fetched_bytes``/``total_bytes`` so callers can
     tell the model the content is partial (#3812).
     """
+    # Privacy Workspace: the code below resolves the target hostname locally
+    # to pin an IP against DNS rebinding. That is the correct defense for
+    # direct network access and stays as-is, but it is incompatible with Tor,
+    # where resolving the target locally is precisely the leak we prevent.
+    # The privacy path uses remote DNS inside the SOCKS request instead, and
+    # writes no disk cache entry. Imported lazily so the standard profile
+    # never loads the privacy stack.
+    if is_privacy_mode():
+        from .privacy_search import privacy_fetch_webpage_content
+        return privacy_fetch_webpage_content(url, timeout, retry_attempt, max_bytes)
+
     effective_cap = min(max_bytes or WEB_FETCH_SOFT_MAX_BYTES, WEB_FETCH_HARD_MAX_BYTES)
     # The cap is part of the cache identity: a truncated soft-cap fetch must
     # not be served to a later full-budget request for the same URL.
@@ -391,6 +404,10 @@ def fetch_webpage_content(url: str, timeout: int = 5, retry_attempt: int = 0,
 
 def _cache_result(cache_file, cache_key: str, result: dict, url: str):
     """Write a result to the content cache."""
+    # PRV-005 backstop. fetch_webpage_content() already returns before reaching
+    # here in the privacy profile, so this never fires in normal operation --
+    # which is exactly what makes it a useful guard against a future caller.
+    require_disk_cache()
     try:
         cache_data = {"timestamp": datetime.now().isoformat(), "data": result}
         with open(cache_file, "w", encoding="utf-8") as f:

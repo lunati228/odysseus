@@ -21,9 +21,11 @@ def check_readiness() -> Dict[str, object]:
     """
     from core.constants import APP_VERSION, DATA_DIR
     from core.database import DATABASE_URL, engine
+    from src.privacy_mode import build_profile_status, is_privacy_mode
     from sqlalchemy import text as sql_text
 
     checks: Dict[str, Dict[str, object]] = {}
+    private_profile = is_privacy_mode()
 
     # Database reachable — the simplest honest probe that the engine is live.
     try:
@@ -31,7 +33,10 @@ def check_readiness() -> Dict[str, object]:
             conn.execute(sql_text("SELECT 1"))
         checks["database"] = {"ok": True}
     except Exception as e:
-        checks["database"] = {"ok": False, "error": str(e)}
+        checks["database"] = {
+            "ok": False,
+            "error": "database unavailable" if private_profile else str(e),
+        }
 
     # Data directory present and writable — home must be able to hold its own data.
     try:
@@ -40,9 +45,14 @@ def check_readiness() -> Dict[str, object]:
         with open(probe, "w", encoding="utf-8") as fh:
             fh.write("ok")
         os.remove(probe)
-        checks["data_dir"] = {"ok": True, "path": DATA_DIR}
+        checks["data_dir"] = {"ok": True}
+        if not private_profile:
+            checks["data_dir"]["path"] = DATA_DIR
     except Exception as e:
-        checks["data_dir"] = {"ok": False, "error": str(e)}
+        checks["data_dir"] = {
+            "ok": False,
+            "error": "private data directory unavailable" if private_profile else str(e),
+        }
 
     # Local-first: storage stays on the home machine (informational, never fatal).
     local_first = (
@@ -51,6 +61,16 @@ def check_readiness() -> Dict[str, object]:
         or "127.0.0.1" in DATABASE_URL
     )
     checks["local_first"] = {"ok": True, "local": local_first}
+
+    if private_profile:
+        try:
+            transport = build_profile_status()["transport"]
+            checks["tor"] = {
+                "ok": bool(transport.get("ready")),
+                "transport": "Tor",
+            }
+        except Exception:
+            checks["tor"] = {"ok": False, "transport": "Tor"}
 
     ready = all(bool(c.get("ok")) for c in checks.values())
     return {

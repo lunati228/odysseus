@@ -15,6 +15,7 @@ from core.atomic_io import atomic_write_json, atomic_write_text
 from core.auth import AuthManager, RESERVED_USERNAMES, SetAdminResult, TOKEN_TTL
 from src.constants import DEEP_RESEARCH_DIR, MEMORY_FILE, PASSWORD_MIN_LENGTH, SKILLS_DIR
 from src.rate_limiter import RateLimiter
+from src.privacy_mode import session_cookie_name
 from src.settings_scrub import scrub_settings
 from src.settings import (
     load_settings as _load_settings,
@@ -83,7 +84,7 @@ class SetAdminRequest(BaseModel):
 class SetOpenRegistrationRequest(BaseModel):
     enabled: bool
 
-SESSION_COOKIE = "odysseus_session"
+SESSION_COOKIE = session_cookie_name()
 
 
 def _secure_cookie(request: Request) -> bool:

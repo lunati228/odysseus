@@ -235,6 +235,31 @@ def build_effective_tool_policy(
             disable_mcp=True,
         )
 
+    # PRV-003/PRV-006: hide every current tool except the tiny privacy
+    # allowlist. The dispatcher independently enforces the same membership so
+    # native/fenced/unknown future calls cannot bypass prompt-side hiding.
+    from src.privacy_mode import is_privacy_mode
+
+    if is_privacy_mode():
+        from src.privacy_policy import PRIVACY_AGENT_ALLOWED_TOOLS
+
+        denied = known_tool_names() - set(PRIVACY_AGENT_ALLOWED_TOOLS)
+        disabled.update(denied)
+        hidden.update(denied)
+        reasons.update(
+            {tool: "Tool is unavailable in Privacy Workspace." for tool in denied}
+        )
+        return ToolPolicy(
+            disabled_tools=frozenset(disabled),
+            hidden_tools=frozenset(hidden),
+            reasons=MappingProxyType(dict(reasons)),
+            mode="privacy",
+            # Only the built-in browser MCP (Brave + Windscribe fallback) is
+            # permitted; schema filtering + dispatcher allowlist keep every
+            # other MCP server hidden and denied.
+            disable_mcp=False,
+        )
+
     return ToolPolicy(
         disabled_tools=frozenset(disabled),
         hidden_tools=frozenset(hidden),

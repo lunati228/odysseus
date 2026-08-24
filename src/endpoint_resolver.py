@@ -14,6 +14,7 @@ from urllib.parse import urlparse, urlunparse
 
 from core.database import SessionLocal, ModelEndpoint
 from src.llm_core import _detect_provider, _host_match, _is_kimi_code_url, KIMI_CODE_USER_AGENT, _ollama_api_root
+from src.privacy_policy import validate_model_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -150,14 +151,23 @@ def resolve_endpoint_runtime(ep, owner: Optional[str] = None) -> Tuple[str, Opti
     store refreshable credentials in ProviderAuthSession and must resolve a
     current access token at call time.
     """
-    base = normalize_base(getattr(ep, "base_url", "") or "")
+    # Validate the persisted row before provider-auth resolution. A stale cloud
+    # OAuth row must not refresh credentials before Privacy Workspace refuses
+    # its remote endpoint.
+    base = validate_model_endpoint(
+        normalize_base(getattr(ep, "base_url", "") or ""),
+        label="persisted model endpoint",
+    )
     api_key = getattr(ep, "api_key", None)
     auth_id = getattr(ep, "provider_auth_id", None)
     if auth_id:
         from src.chatgpt_subscription import resolve_runtime_credentials
 
         creds = resolve_runtime_credentials(auth_id, owner=owner)
-        base = normalize_base(creds.get("base_url") or base)
+        base = validate_model_endpoint(
+            normalize_base(creds.get("base_url") or base),
+            label="resolved provider endpoint",
+        )
         api_key = creds.get("api_key")
     return base, api_key
 
@@ -208,6 +218,7 @@ def _resolve_tailscale_host(hostname: str) -> Optional[str]:
 
 def resolve_url(url: str) -> str:
     """If a URL's hostname can't be resolved via DNS, try Tailscale."""
+    url = validate_model_endpoint(url, label="model endpoint DNS target")
     parsed = urlparse(url)
     hostname = parsed.hostname
     if not hostname:
@@ -359,6 +370,10 @@ def resolve_endpoint(
     Returns:
         (endpoint_url, model, headers) — resolved or fallback values.
     """
+    if fallback_url:
+        fallback_url = validate_model_endpoint(
+            fallback_url, label=f"{setting_prefix} fallback endpoint"
+        )
     try:
         from src.settings import get_user_setting, load_settings
         settings = load_settings()

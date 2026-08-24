@@ -6,12 +6,14 @@ Each server runs as a stdio subprocess managed by McpManager.
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 from core.platform_compat import IS_WINDOWS, which_tool
 from src.runtime_paths import get_app_root
@@ -60,6 +62,20 @@ def _find_npx() -> str:
             return npx_candidate
     return "npx"  # fallback, will fail with a clear error
 
+
+def _find_node() -> str:
+    """Find the Node.js runtime used to execute a verified cached MCP CLI."""
+    node = which_tool("node") or shutil.which("node")
+    if node:
+        return node
+    if IS_WINDOWS:
+        candidate = r"C:\Program Files\nodejs\node.exe"
+        if os.path.isfile(candidate):
+            return candidate
+        return "node.exe"
+    return "node"
+
+
 # Server definitions: id -> (script path relative to project root, display name)
 #
 # bash / python / filesystem / web_search were folded into native in-process
@@ -81,7 +97,7 @@ _BUILTIN_NPX_SERVERS = {
     "builtin_browser": {
         "name": "Built-in: Browser",
         "command": "npx",
-        "args": ["-y", "@playwright/mcp@latest", "--headless", "--caps", "vision"],
+        "args": ["-y", "@playwright/mcp@0.0.78", "--headless", "--caps", "vision"],
     }
 }
 
@@ -129,8 +145,139 @@ def _find_browser_executable() -> str:
     return ""
 
 
+def _env_enabled(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _validated_browser_proxy() -> tuple[str, str, str]:
+    """Return a validated endpoint and out-of-URL credentials, or fail closed.
+
+    Windscribe Proxy Gateway is LAN-facing. A non-loopback listener therefore
+    requires authenticated HTTP so another LAN client cannot silently consume
+    the user's VPN allowance. Playwright documents username/password support
+    for HTTP(S), not SOCKS5: https://playwright.dev/docs/network#http-proxy
+    """
+    raw = os.environ.get("ODYSSEUS_BROWSER_PROXY_SERVER", "").strip()
+    username = os.environ.get("ODYSSEUS_BROWSER_PROXY_USERNAME", "").strip()
+    password = os.environ.get("ODYSSEUS_BROWSER_PROXY_PASSWORD", "")
+    required = _env_enabled("ODYSSEUS_BROWSER_REQUIRE_PROXY")
+    if not raw:
+        if required:
+            raise ValueError("A browser proxy is required; direct browser fallback is disabled")
+        if username or password:
+            raise ValueError("Browser proxy credentials require a proxy endpoint")
+        return "", "", ""
+    if "direct://" in raw.lower():
+        raise ValueError("Direct browser fallback is forbidden")
+
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Browser proxy endpoint is malformed") from exc
+
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "socks5"):
+        raise ValueError("Browser fallback requires HTTP or loopback SOCKS5")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Browser proxy credentials must not be embedded in the endpoint URL")
+    if parsed.path or parsed.query or parsed.fragment:
+        raise ValueError("Browser proxy must not contain a path, query, or fragment")
+    if not parsed.hostname or port is None or not 1 <= port <= 65535:
+        raise ValueError("Browser proxy requires an explicit valid port")
+
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError as exc:
+        raise ValueError("Browser proxy host must be a numeric local address") from exc
+    private_lan = any(address in network for network in (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+    ))
+    if address.version != 4 or not (address.is_loopback or private_lan):
+        raise ValueError("Browser proxy host must be loopback or private IPv4")
+    has_username = bool(username)
+    has_password = bool(password)
+    if has_username != has_password:
+        raise ValueError("A private-LAN fallback requires authenticated HTTP credentials")
+    if scheme == "socks5" and (not address.is_loopback or has_username):
+        raise ValueError("A private-LAN fallback requires authenticated HTTP, not SOCKS5")
+    if private_lan and not address.is_loopback and not (has_username and has_password):
+        raise ValueError("A private-LAN fallback requires authenticated HTTP credentials")
+    return raw, username, password
+
+
+def _validated_browser_mcp_config(
+    config_path: str,
+    proxy_server: str,
+    proxy_username: str,
+    proxy_password: str,
+) -> str:
+    """Require the launch-level guards that prevent proxy and side-channel leaks."""
+    if not config_path:
+        raise ValueError("A fail-closed browser MCP config is required with the proxy")
+    if not os.path.isabs(config_path) or not os.path.isfile(config_path):
+        raise ValueError("Browser MCP config must be an existing absolute file")
+
+    try:
+        with open(config_path, encoding="utf-8-sig") as handle:
+            config = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Browser MCP config is unreadable or invalid JSON") from exc
+
+    browser = config.get("browser") if isinstance(config, dict) else None
+    launch = browser.get("launchOptions") if isinstance(browser, dict) else None
+    context = browser.get("contextOptions") if isinstance(browser, dict) else None
+    launch_args = launch.get("args") if isinstance(launch, dict) else None
+    launch_proxy = launch.get("proxy") if isinstance(launch, dict) else None
+    context_proxy = context.get("proxy") if isinstance(context, dict) else None
+    if not isinstance(launch_args, list) or not all(isinstance(arg, str) for arg in launch_args):
+        raise ValueError("Browser MCP config is missing launch security guards")
+
+    proxy_host = urlsplit(proxy_server).hostname
+    resolver_hosts = [proxy_host]
+    if proxy_host != "127.0.0.1":
+        resolver_hosts.append("127.0.0.1")
+    resolver_guard = "--host-resolver-rules=MAP * ~NOTFOUND, " + ", ".join(
+        f"EXCLUDE {host}" for host in resolver_hosts
+    )
+    required_args = {
+        f"--proxy-server={proxy_server}",
+        resolver_guard,
+        "--dns-prefetch-disable",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    }
+    if not required_args.issubset(set(launch_args)):
+        raise ValueError("Browser MCP config is missing launch security guards")
+    resolver_args = [
+        arg for arg in launch_args if arg.startswith("--host-resolver-rules=")
+    ]
+    if resolver_args != [resolver_guard]:
+        raise ValueError("Browser MCP config is missing launch security guards")
+    if any("direct://" in arg.lower() for arg in launch_args):
+        raise ValueError("Browser MCP config permits a forbidden direct fallback")
+    if browser.get("isolated") is not True:
+        raise ValueError("Browser MCP fallback must use an isolated profile")
+    expected_proxy = {
+        "server": proxy_server,
+        "bypass": "localhost,127.0.0.1",
+    }
+    if proxy_username:
+        expected_proxy["username"] = proxy_username
+        expected_proxy["password"] = proxy_password
+    if launch_proxy != expected_proxy or context_proxy != expected_proxy:
+        raise ValueError("Browser MCP proxy config does not match the validated settings")
+    if context.get("serviceWorkers") != "block":
+        raise ValueError("Browser MCP fallback must block service workers")
+    return config_path
+
+
 def _browser_mcp_args(args: list[str]) -> list[str]:
-    """Return Playwright MCP args with a concrete browser executable when found."""
+    """Return Playwright MCP args with an optional fail-closed browser proxy."""
     out = list(args or [])
     if "--executable-path" not in out:
         browser = _find_browser_executable()
@@ -139,10 +286,51 @@ def _browser_mcp_args(args: list[str]) -> list[str]:
     if os.environ.get("ODYSSEUS_BROWSER_ISOLATED", "1").lower() not in ("0", "false", "no"):
         if "--isolated" not in out and "--user-data-dir" not in out:
             out.append("--isolated")
-    if os.environ.get("ODYSSEUS_BROWSER_NO_SANDBOX", "1").lower() not in ("0", "false", "no"):
+    proxy_server, proxy_username, proxy_password = _validated_browser_proxy()
+    if proxy_server:
+        if any(
+            arg in ("--proxy-server", "--proxy-bypass")
+            or arg.startswith("--proxy-server=")
+            or arg.startswith("--proxy-bypass=")
+            for arg in out
+        ):
+            raise ValueError("Browser proxy settings must come only from the validated config")
+        config_path = _validated_browser_mcp_config(
+            os.environ.get("ODYSSEUS_BROWSER_MCP_CONFIG", "").strip(),
+            proxy_server,
+            proxy_username,
+            proxy_password,
+        )
+        if "--no-sandbox" in out:
+            raise ValueError("The managed browser fallback cannot disable the browser sandbox")
+        if "--sandbox" not in out:
+            out.append("--sandbox")
+        out.extend([
+            "--block-service-workers",
+            "--config", config_path,
+        ])
+    elif os.environ.get("ODYSSEUS_BROWSER_NO_SANDBOX", "1").lower() not in ("0", "false", "no"):
         if "--no-sandbox" not in out and "--sandbox" not in out:
             out.append("--no-sandbox")
     return out
+
+
+def _browser_mcp_launch_command(
+    npx_path: str,
+    args: list[str],
+) -> tuple[str, list[str]]:
+    """Use npx normally, or execute an exact cached CLI without npm access."""
+    if not BROWSER_MCP_REQUIRE_CACHE:
+        return npx_path, list(args)
+
+    package_spec = _npx_package_from_args(args)
+    launcher = _find_cached_npx_package_bin(package_spec)
+    if not package_spec or not launcher:
+        raise FileNotFoundError(
+            f"exact cached npm package {package_spec or '<missing>'!r} was not found"
+        )
+    package_index = args.index(package_spec)
+    return _find_node(), [launcher, *args[package_index + 1:]]
 
 
 def builtin_python_env(base_dir: str) -> dict[str, str]:
@@ -160,8 +348,13 @@ def builtin_python_env(base_dir: str) -> dict[str, str]:
     return {"PYTHONPATH": os.pathsep.join(parts)}
 
 
-async def register_builtin_servers(mcp_manager):
-    """Connect all built-in MCP servers to the manager."""
+async def register_builtin_servers(mcp_manager, *, only_browser: bool = False):
+    """Connect built-in MCP servers to the manager.
+
+    "only_browser" restricts registration to the built-in Playwright/Brave
+    browser server and is used by Privacy Workspace so user-configured MCP
+    servers (and the email/memory/RAG/image Python servers) never start there.
+    """
     if MCP_DISABLED:
         logger.info("Built-in MCP servers disabled via ODYSSEUS_DISABLE_MCP")
         return
@@ -189,12 +382,13 @@ async def register_builtin_servers(mcp_manager):
         except BaseException as e:
             logger.warning(f"Built-in MCP server {name} error: {type(e).__name__}: {e}")
 
-    for server_id, (script, name) in _BUILTIN_SERVERS.items():
-        script_path = os.path.join(base_dir, script)
-        if not os.path.exists(script_path):
-            logger.warning(f"Built-in MCP server script not found: {script_path}")
-            continue
-        _spawn_bg(_connect_python_server(server_id, script_path, name))
+    if not only_browser:
+        for server_id, (script, name) in _BUILTIN_SERVERS.items():
+            script_path = os.path.join(base_dir, script)
+            if not os.path.exists(script_path):
+                logger.warning(f"Built-in MCP server script not found: {script_path}")
+                continue
+            _spawn_bg(_connect_python_server(server_id, script_path, name))
 
     # Register NPX-based servers in the background (they take longer to start)
     npx_path = _find_npx()
@@ -203,25 +397,21 @@ async def register_builtin_servers(mcp_manager):
     async def _start_npx_servers():
         await asyncio.sleep(3)  # let Python servers finish first
         for server_id, cfg in _BUILTIN_NPX_SERVERS.items():
-            # Browser automation is a shipped built-in, so the default path
-            # lets `npx -y` install @playwright/mcp on first start. Locked-down
-            # installs can opt back into the old no-network startup behavior
-            # with ODYSSEUS_BROWSER_MCP_REQUIRE_CACHE=1.
-            args = _browser_mcp_args(cfg["args"]) if server_id == "builtin_browser" else list(cfg["args"])
-            pkg_spec = _npx_package_from_args(args)
-            if BROWSER_MCP_REQUIRE_CACHE and pkg_spec and not await _is_npx_package_cached(npx_path, pkg_spec):
-                logger.warning(
-                    f"{cfg['name']} is not available.\n"
-                    f"  Reason: npm package {pkg_spec!r} is not installed in the npx cache.\n"
-                    f"  Impact: tools provided by this MCP server will be unavailable.\n"
-                    f"  Fix:    {os.path.basename(npx_path)} -y {pkg_spec} --version\n"
-                    f"          (run once, then restart Odysseus)\n"
-                    f"  Notes:  ODYSSEUS_BROWSER_MCP_REQUIRE_CACHE=1 is set, "
-                    f"so Odysseus will not install browser automation on startup."
+            try:
+                args = _browser_mcp_args(cfg["args"]) if server_id == "builtin_browser" else list(cfg["args"])
+                command, args = (
+                    _browser_mcp_launch_command(npx_path, args)
+                    if server_id == "builtin_browser"
+                    else (npx_path, args)
                 )
+            except (FileNotFoundError, ValueError) as exc:
+                logger.warning("Built-in browser disabled: %s", exc)
                 continue
+            name = cfg["name"]
+            if server_id == "builtin_browser" and os.environ.get("ODYSSEUS_BROWSER_ROLE") == "windscribe-fallback":
+                name = "Built-in: Browser (Windscribe fallback)"
 
-            logger.info(f"Starting NPX server: {cfg['name']} ({npx_path} {' '.join(args)})")
+            logger.info(f"Starting browser MCP server: {name} ({command} {' '.join(args)})")
             try:
                 env = None
                 if server_id == "builtin_browser":
@@ -236,20 +426,20 @@ async def register_builtin_servers(mcp_manager):
                     }
                 ok = await mcp_manager.connect_server(
                     server_id=server_id,
-                    name=cfg["name"],
+                    name=name,
                     transport="stdio",
-                    command=npx_path,
+                    command=command,
                     args=args,
                     env=env,
                 )
                 if ok:
-                    logger.info(f"Built-in NPX server registered: {cfg['name']}")
+                    logger.info(f"Built-in NPX server registered: {name}")
                 else:
-                    logger.warning(f"Built-in NPX server failed to connect: {cfg['name']}")
+                    logger.warning(f"Built-in NPX server failed to connect: {name}")
             except asyncio.CancelledError:
                 raise
             except BaseException as e:
-                logger.warning(f"Built-in NPX server {cfg['name']} error: {type(e).__name__}: {e}")
+                logger.warning(f"Built-in NPX server {name} error: {type(e).__name__}: {e}")
 
     _spawn_bg(_start_npx_servers())
 
@@ -339,11 +529,71 @@ def _npx_package_name(package_spec):
     if not package_spec:
         return ""
     if package_spec.startswith("@"):
-        parts = package_spec.split("@", 2)
+        parts = package_spec.split("@")
         if len(parts) >= 3:
-            return f"@{parts[1]}"
+            return "@" + parts[1]
         return package_spec
     return package_spec.split("@", 1)[0]
+
+
+def _find_cached_npx_package_bin(package_spec: str | None) -> str:
+    """Resolve an exact-version package CLI inside npm's npx cache."""
+    package_name = _npx_package_name(package_spec)
+    version_prefix = f"{package_name}@" if package_name else ""
+    if not version_prefix or not str(package_spec).startswith(version_prefix):
+        return ""
+    expected_version = str(package_spec)[len(version_prefix):]
+    if not expected_version or expected_version == "latest":
+        return ""
+
+    relative_package = os.path.join("node_modules", *package_name.split("/"))
+    for cache_root in _npm_cache_roots():
+        npx_root = os.path.join(cache_root, "_npx")
+        try:
+            entries = list(os.scandir(npx_root))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            package_dir = os.path.join(entry.path, relative_package)
+            package_json = os.path.join(package_dir, "package.json")
+            try:
+                with open(package_json, encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("name") != package_name:
+                continue
+            if str(metadata.get("version", "")) != expected_version:
+                continue
+
+            bin_field = metadata.get("bin")
+            if isinstance(bin_field, str):
+                relative_bin = bin_field
+            elif isinstance(bin_field, dict) and len(bin_field) == 1:
+                relative_bin = next(iter(bin_field.values()))
+            else:
+                continue
+            if not isinstance(relative_bin, str) or not relative_bin:
+                continue
+
+            package_real = os.path.realpath(package_dir)
+            candidate = os.path.realpath(os.path.join(package_dir, relative_bin))
+            try:
+                inside_package = os.path.commonpath([package_real, candidate])
+            except ValueError:
+                continue
+            if os.path.normcase(inside_package) != os.path.normcase(package_real):
+                continue
+            if os.path.isfile(candidate):
+                return candidate
+    return ""
 
 
 def _npm_cache_roots():

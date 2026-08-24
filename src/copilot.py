@@ -147,10 +147,18 @@ def _oauth_post_headers() -> Dict[str, str]:
     }
 
 
+def _require_cloud_models() -> None:
+    """PRV-003: every outbound call in this module is a cloud-model call."""
+    from src.privacy_policy import require_capability
+
+    require_capability("cloud-models")
+
+
 def request_device_code(host: str = GITHUB_HOST, *, timeout: float = 10.0) -> Dict:
     """Start the device flow. Returns GitHub's
     ``{device_code, user_code, verification_uri, expires_in, interval}``.
     """
+    _require_cloud_models()
     r = httpx.post(
         device_code_url(host),
         headers=_oauth_post_headers(),
@@ -166,6 +174,7 @@ def poll_access_token(host: str, device_code: str, *, timeout: float = 10.0) -> 
     ``error`` field (``authorization_pending``/``slow_down``) while the user
     hasn't authorised yet, or ``{access_token, ...}`` once they have.
     """
+    _require_cloud_models()
     r = httpx.post(
         access_token_url(host),
         headers=_oauth_post_headers(),
@@ -187,6 +196,7 @@ def fetch_models(base: str, token: str, *, timeout: float = 15.0) -> List[Dict]:
     full list if no model advertises ``model_picker_enabled`` (defensive
     against API-shape drift).
     """
+    _require_cloud_models()
     url = base.rstrip("/") + "/models"
     r = httpx.get(url, headers=copilot_headers(token), timeout=timeout)
     r.raise_for_status()

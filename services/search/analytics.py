@@ -12,20 +12,43 @@ from .cache import cache_metrics
 
 logger = logging.getLogger(__name__)
 
+
+def analytics_enabled() -> bool:
+    """PRV-005: the privacy profile records no plaintext search analytics.
+
+    ``_record_query`` stores the raw query string as a key under
+    ``query_patterns``, so this file is a plaintext record of everything ever
+    searched. Relocating it into the vault is not sufficient -- the privacy
+    profile must not produce it at all.
+    """
+    from src.privacy_mode import is_privacy_mode
+
+    return not is_privacy_mode()
+
+
 # Dedicated error logger — write to the data logs directory (writable on both
 # native runs and Docker, where DATA_DIR resolves to the bind-mounted volume).
 _log_dir = Path(DATA_DIR) / "logs"
 _error_log_path = _log_dir / "search_engine_error.log"
 error_logger = logging.getLogger("search_engine_error")
 error_logger.propagate = False
-try:
-    _log_dir.mkdir(parents=True, exist_ok=True)
-    _error_handler = logging.FileHandler(_error_log_path, encoding="utf-8")
-    _error_handler.setLevel(logging.WARNING)
-    _error_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    error_logger.addHandler(_error_handler)
-except Exception as _e:
-    logging.getLogger(__name__).warning("search_engine_error log handler unavailable: %s", _e)
+# In the privacy profile the logger stays a valid object with no sink at all.
+# Its call sites in core.py, content.py and providers.py format the fetched
+# URL and the exception text into the message -- and PrivacyTransportError
+# messages embed the URL -- so attaching a file handler would put research
+# targets into an at-rest file inside the vault. propagate is already False,
+# so with no handler nothing is written anywhere.
+if analytics_enabled():
+    try:
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _error_handler = logging.FileHandler(_error_log_path, encoding="utf-8")
+        _error_handler.setLevel(logging.WARNING)
+        _error_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        error_logger.addHandler(_error_handler)
+    except Exception as _e:
+        logging.getLogger(__name__).warning("search_engine_error log handler unavailable: %s", _e)
+else:
+    error_logger.addHandler(logging.NullHandler())
 
 # Analytics file — also in the writable logs volume.
 ANALYTICS_FILE = _log_dir / "search_analytics.json"
@@ -66,6 +89,11 @@ def _default_analytics() -> Dict[str, Any]:
 
 def _load_analytics() -> Dict[str, Any]:
     """Load analytics data from the JSON file, creating defaults if missing."""
+    # Returns zeroed counters without touching disk in the privacy profile,
+    # so get_search_stats() keeps working for the admin UI while no file is
+    # read or created.
+    if not analytics_enabled():
+        return _default_analytics()
     if not ANALYTICS_FILE.exists():
         default = _default_analytics()
         _save_analytics(default)
@@ -87,6 +115,12 @@ def _load_analytics() -> Dict[str, Any]:
 
 def _save_analytics(data: Dict[str, Any]) -> None:
     """Persist analytics data to the JSON file."""
+    # Backstop refusal at the writer. The callers below already skip this in
+    # the privacy profile; raising here is what makes it unreachable *by
+    # construction* for a future caller that forgets.
+    from src.privacy_policy import require_capability
+
+    require_capability("search-analytics")
     try:
         with open(ANALYTICS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -96,6 +130,13 @@ def _save_analytics(data: Dict[str, Any]) -> None:
 
 def _record_query(query: str, success: bool, cache_hit: bool) -> None:
     """Update analytics for a single query execution."""
+    if not analytics_enabled():
+        # Counted in memory only; the query string itself is never stored.
+        if cache_hit:
+            cache_metrics["hits"] += 1
+        else:
+            cache_metrics["misses"] += 1
+        return
     analytics = _load_analytics()
     analytics["total_queries"] += 1
     if success:

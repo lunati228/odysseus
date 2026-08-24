@@ -25,10 +25,14 @@ def _format_mcp_connection_error(name: str, command: str = "", args: Optional[Li
     lower_command = command_line.lower()
 
     if "@playwright/mcp" in lower_command:
+        package_spec = next(
+            (arg for arg in args if arg.startswith("@playwright/mcp@")),
+            "@playwright/mcp@0.0.78",
+        )
         return (
             f"{raw_error}\n\n"
             "Browser MCP could not start. On fresh installs, cache the Playwright MCP package once before connecting:\n\n"
-            "npx -y @playwright/mcp@latest --version\n\n"
+            f"npx -y {package_spec} --version\n\n"
             "Then restart Odysseus and reconnect the Browser MCP server."
         )
 

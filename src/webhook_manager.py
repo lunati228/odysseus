@@ -396,6 +396,8 @@ class WebhookManager:
         Overridable seam: tests replace this to avoid real sockets. Redirects
         are disabled so a 3xx can't bounce the delivery to another host.
         """
+        from src.privacy_policy import require_capability  # PRV-003
+        require_capability("webhooks")
         transport = _PinnedAsyncTransport(ip)
         async with httpx.AsyncClient(
             timeout=10, follow_redirects=False, transport=transport,

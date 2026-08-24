@@ -159,6 +159,9 @@ class TTSService:
     # ── API endpoint ──
 
     def _synthesize_api(self, text: str, endpoint_id: str, model: str, voice: str, speed: float = 1.0) -> Optional[bytes]:
+        # PRV-003: the text to speak is model or user content.
+        from src.privacy_policy import require_capability
+        require_capability("hosted-speech")
         from src.database import SessionLocal, ModelEndpoint
 
         db = SessionLocal()

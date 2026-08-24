@@ -85,6 +85,100 @@ let _deps = null;
 let _autoSelectingDefault = false;
 let _defaultChatPickInFlight = false;
 let _defaultPendingSeq = 0;
+const _LOCAL_MODEL_STATES = new Set(['AVAILABLE', 'STOPPED', 'LOADING', 'READY', 'ERROR']);
+const _EMPTY_LOCAL_INVENTORY = Object.freeze({
+  available: false,
+  state: 'UNAVAILABLE',
+  activeModelKey: null,
+  endpointUrl: null,
+  models: [],
+});
+let _localModelInventory = _EMPTY_LOCAL_INVENTORY;
+let _localInventoryPromise = null;
+let _localModelActivationKey = '';
+
+function _normalizeLocalModelInventory(raw) {
+  if (!raw || typeof raw !== 'object' || raw.available !== true || !Array.isArray(raw.models)) {
+    return _EMPTY_LOCAL_INVENTORY;
+  }
+  let endpointUrl = '';
+  try {
+    const parsed = new URL(String(raw.endpointUrl || ''));
+    const loopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '::1';
+    if (parsed.protocol !== 'http:' || !loopback) return _EMPTY_LOCAL_INVENTORY;
+    endpointUrl = parsed.href.replace(/\/+$/, '');
+  } catch (_) {
+    return _EMPTY_LOCAL_INVENTORY;
+  }
+  const models = [];
+  const seen = new Set();
+  raw.models.forEach(item => {
+    if (!item || typeof item !== 'object') return;
+    const key = String(item.key || '');
+    const alias = String(item.alias || '');
+    const state = String(item.state || '').toUpperCase();
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(key) || !alias || alias.length > 256 || seen.has(key)) return;
+    if (!_LOCAL_MODEL_STATES.has(state)) return;
+    seen.add(key);
+    models.push({
+      key,
+      alias,
+      displayName: String(item.displayName || alias).slice(0, 160),
+      state,
+      isActive: item.isActive === true,
+      supportsReasoningEffort: item.supportsReasoningEffort === true,
+      mtpDefault: item.mtpDefault === true,
+      contextSize: Number.isInteger(item.contextSize) && item.contextSize > 0 ? item.contextSize : null,
+    });
+  });
+  const state = String(raw.state || '').toUpperCase();
+  return {
+    available: true,
+    state: _LOCAL_MODEL_STATES.has(state) ? state : 'ERROR',
+    activeModelKey: typeof raw.activeModelKey === 'string' ? raw.activeModelKey : null,
+    endpointUrl,
+    models,
+  };
+}
+
+async function _refreshLocalModelInventory() {
+  if (_localInventoryPromise) return _localInventoryPromise;
+  _localInventoryPromise = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/local-models`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('local model inventory unavailable');
+      _localModelInventory = _normalizeLocalModelInventory(await res.json());
+    } catch (_) {
+      _localModelInventory = _EMPTY_LOCAL_INVENTORY;
+    }
+    _updateQwenReasoningVisibility();
+    return _localModelInventory;
+  })();
+  try {
+    return await _localInventoryPromise;
+  } finally {
+    _localInventoryPromise = null;
+  }
+}
+
+function _selectedModelId() {
+  if (!_deps) return '';
+  const currentSessionId = _deps.getCurrentSessionId && _deps.getCurrentSessionId();
+  const sessions = (_deps.getSessions && _deps.getSessions()) || [];
+  const current = sessions.find(session => session.id === currentSessionId);
+  if (current && current.model) return current.model;
+  const pending = _deps.getPendingChat && _deps.getPendingChat();
+  return (pending && pending.modelId) || '';
+}
+
+function _updateQwenReasoningVisibility() {
+  const row = document.getElementById('qwen-reasoning-row');
+  if (!row) return false;
+  const qwen = (_localModelInventory.models || []).find(model => model.supportsReasoningEffort);
+  const visible = !!(qwen && _selectedModelId() === qwen.alias);
+  row.hidden = !visible;
+  return visible;
+}
 
 function _modelExists(modelId, url) {
   if (!modelId || !window.modelsModule || !window.modelsModule.getCachedItems) return false;
@@ -192,6 +286,7 @@ async function _ensureDefaultPendingChat() {
 export function initModelPicker(deps) {
   _deps = deps;
   _initModelPickerDropdown();
+  _initQwenReasoningControl();
 }
 
 function _initModelPickerDropdown() {
@@ -324,12 +419,55 @@ function _initModelPickerDropdown() {
         });
       });
     });
-    return sortModelObjects(result);
+
+    // The manager registry is inventory, not merely whatever alias the
+    // currently-running OpenAI endpoint happens to report.  Merge it after
+    // endpoint discovery so stopped models remain loadable from the picker.
+    if (_localModelInventory.available && _localModelInventory.endpointUrl) {
+      const managedUrl = _localModelInventory.endpointUrl.replace(/\/+$/, '');
+      const endpointItem = items.find(item => String(item.url || '').replace(/\/+$/, '') === managedUrl);
+      (_localModelInventory.models || []).forEach(local => {
+        let entry = result.find(model =>
+          model.mid === local.alias && String(model.url || '').replace(/\/+$/, '') === managedUrl
+        );
+        if (!entry) {
+          entry = {
+            key: `managed-local::${local.key}`,
+            mid: local.alias,
+            display: local.displayName,
+            url: _localModelInventory.endpointUrl,
+            endpointId: (endpointItem && endpointItem.endpoint_id) || '',
+            epName: 'On this PC',
+            category: 'local',
+            providerText: `local installed ${local.key} ${local.alias}`,
+            stale: false,
+            staleReason: '',
+            offline: false,
+          };
+          result.push(entry);
+        }
+        Object.assign(entry, {
+          managedLocal: true,
+          localKey: local.key,
+          localState: local.state,
+          localIsActive: local.isActive,
+          supportsReasoningEffort: local.supportsReasoningEffort,
+          display: local.displayName,
+          url: _localModelInventory.endpointUrl,
+          endpointId: entry.endpointId || ((endpointItem && endpointItem.endpoint_id) || ''),
+          stale: false,
+          staleReason: '',
+          offline: false,
+        });
+      });
+    }
+    return sortModelObjects(result).sort((a, b) => Number(!!b.managedLocal) - Number(!!a.managedLocal));
   }
 
   function _hasModelCache() {
     try {
-      return !!(window.modelsModule && window.modelsModule.getCachedItems && (window.modelsModule.getCachedItems() || []).length);
+      const endpointCache = !!(window.modelsModule && window.modelsModule.getCachedItems && (window.modelsModule.getCachedItems() || []).length);
+      return endpointCache || !!(_localModelInventory.available && _localModelInventory.models.length);
     } catch (_) {
       return false;
     }
@@ -354,12 +492,17 @@ function _initModelPickerDropdown() {
   }
 
   async function _refreshPickerModels({ force = false, showLoading = false } = {}) {
-    if (!window.modelsModule || typeof window.modelsModule.refreshModels !== 'function') return;
     const seq = ++_pickerLoadSeq;
     _pickerLoading = true;
     if (showLoading) _renderLoading(force ? 'Refreshing models…' : 'Loading models…');
     try {
-      await window.modelsModule.refreshModels(force);
+      const jobs = [_refreshLocalModelInventory()];
+      if (window.modelsModule && typeof window.modelsModule.refreshModels === 'function') {
+        jobs.push(window.modelsModule.refreshModels(force));
+      }
+      // One provider probe failing must not hide manager-owned local models,
+      // and an unavailable optional manager must not hide cloud endpoints.
+      await Promise.allSettled(jobs);
       await _refreshLocalProbe();
     } finally {
       if (seq === _pickerLoadSeq) {
@@ -427,6 +570,70 @@ function _initModelPickerDropdown() {
   const _collapsedProviders = new Set(_loadList('odysseus-model-collapsed'));
   let _justExpandedProvider = null;
 
+  function _localStateLabel(model) {
+    if (_localModelActivationKey === model.localKey || model.localState === 'LOADING') return 'Loading…';
+    if (model.localState === 'READY' && model.localIsActive) return 'Loaded';
+    if (model.localState === 'ERROR') return 'Unavailable';
+    return 'Load';
+  }
+
+  async function _activateManagedLocal(model, row) {
+    if (!model || !model.localKey || _localModelActivationKey) return;
+    if (model.localState === 'READY' && model.localIsActive) {
+      await _pick(model);
+      return;
+    }
+
+    _localModelActivationKey = model.localKey;
+    row.classList.add('model-switch-local-loading');
+    row.setAttribute('aria-busy', 'true');
+    const stateLabel = row.querySelector('.model-switch-ep');
+    if (stateLabel) stateLabel.textContent = 'Loading…';
+    uiModule.showToast(`Loading ${model.display} into the GPUs…`);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/local-models/${encodeURIComponent(model.localKey)}/activation`,
+        { method: 'POST', credentials: 'same-origin' },
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload && payload.detail ? payload.detail : 'model load failed');
+      const normalized = _normalizeLocalModelInventory(payload);
+      if (!normalized.available || normalized.state !== 'READY' || normalized.activeModelKey !== model.localKey) {
+        throw new Error('model manager did not report the selected model ready');
+      }
+      _localModelInventory = normalized;
+      _updateQwenReasoningVisibility();
+      if (window.modelsModule && typeof window.modelsModule.refreshModels === 'function') {
+        try { await window.modelsModule.refreshModels(true); } catch (_) { /* lifecycle result is authoritative */ }
+      }
+      _localProbeFetchedAt = 0;
+      await _refreshLocalProbe();
+      const activeModel = normalized.models.find(item => item.key === model.localKey);
+      if (!activeModel) throw new Error('selected model is absent from manager inventory');
+      const loaded = _getAllModels().find(candidate =>
+        candidate.managedLocal && candidate.localKey === model.localKey
+      ) || {
+        ...model,
+        mid: activeModel.alias,
+        url: normalized.endpointUrl,
+        localState: 'READY',
+        localIsActive: true,
+      };
+      await _pick(loaded);
+      if (payload.warmup === 'FAILED') {
+        uiModule.showToast(`${model.display} is ready; its first reply may be slower`);
+      }
+    } catch (error) {
+      uiModule.showError(`Could not load ${model.display}: ${error && error.message ? error.message : 'unknown error'}`);
+      await _refreshLocalModelInventory();
+      if (!menu.classList.contains('hidden')) _populate(search.value || '');
+    } finally {
+      _localModelActivationKey = '';
+      row.classList.remove('model-switch-local-loading');
+      row.removeAttribute('aria-busy');
+    }
+  }
+
   function _populate(filter) {
     listEl.innerHTML = '';
     listEl.classList.remove('is-loading');
@@ -471,6 +678,13 @@ function _initModelPickerDropdown() {
     function _addRow(m) {
       const row = document.createElement('div');
       row.className = 'model-switch-item';
+      if (m.managedLocal) {
+        row.classList.add('model-switch-managed-local');
+        row.dataset.localModelKey = m.localKey;
+        row.title = m.localState === 'READY' && m.localIsActive
+          ? 'Loaded in the GPUs — select it for this chat'
+          : 'Stop the current local model and load this model into the GPUs';
+      }
       if (m.stale) {
         row.classList.add('model-switch-stale');
         row.style.opacity = '0.45';
@@ -499,7 +713,8 @@ function _initModelPickerDropdown() {
       epSpan.className = 'model-switch-ep';
       // Don't show endpoint name if it matches the model name (local self-hosted)
       const _epDisplay = m.epName && !m.display.toLowerCase().includes(m.epName.toLowerCase().split('/').pop()) ? m.epName : '';
-      epSpan.textContent = _epDisplay;
+      epSpan.textContent = m.managedLocal ? _localStateLabel(m) : _epDisplay;
+      if (m.managedLocal) epSpan.classList.add(`local-state-${String(m.localState || 'available').toLowerCase()}`);
       row.appendChild(epSpan);
 
       // Inline favorite dot — toggles favorite, never picks the model.
@@ -537,7 +752,10 @@ function _initModelPickerDropdown() {
       });
       row.appendChild(favDot);
 
-      row.addEventListener('click', () => _pick(m));
+      row.addEventListener('click', () => {
+        if (m.managedLocal) _activateManagedLocal(m, row);
+        else _pick(m);
+      });
       listEl.appendChild(row);
     }
 
@@ -581,6 +799,12 @@ function _initModelPickerDropdown() {
         _addSection('Recent');
         recentModels.forEach(m => { shown.add(_pickerModelKey(m)); _addRow(m); });
       }
+    }
+
+    const managedModels = all.filter(m => m.managedLocal && !shown.has(_pickerModelKey(m)));
+    if (managedModels.length) {
+      _addSection('On this PC');
+      managedModels.forEach(m => { shown.add(_pickerModelKey(m)); _addRow(m); });
     }
 
     // Small catalogs: still list everything so users aren't forced to search.
@@ -788,6 +1012,7 @@ async function _pick(m) {
       } else {
         _renderLoading('Loading models…');
       }
+      try { document.dispatchEvent(new CustomEvent('odysseus:model-picker-opened')); } catch (_) {}
       if (window.modelsModule && window.modelsModule.refreshModels) {
         // Force the cheap /api/models cache refresh when the picker opens.
         // This does not wait on provider probes; the backend returns cached
@@ -955,4 +1180,87 @@ export function updateModelPicker() {
   } else {
     label.textContent = displayName;
   }
+  _updateQwenReasoningVisibility();
+}
+
+// ── Local Qwen reasoning-effort control ──
+const _QWEN_LEVELS = ['low', 'medium', 'xhigh'];
+let _qwenSaving = false;
+
+async function _fetchQwenReasoningLevel() {
+  const res = await fetch(API_BASE + '/api/models/qwen/reasoning-effort', { credentials: 'same-origin' });
+  if (!res.ok) throw new Error('unavailable');
+  const data = await res.json();
+  if (!data || _QWEN_LEVELS.indexOf(data.level) < 0) throw new Error('unavailable');
+  return data.level;
+}
+
+async function _saveQwenReasoningLevel(level) {
+  const res = await fetch(API_BASE + '/api/models/qwen/reasoning-effort', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ level: level }),
+  });
+  const data = await res.json().catch(function () { return {}; });
+  if (!res.ok) {
+    const detail = data && data.detail ? data.detail : 'save failed';
+    throw new Error(detail);
+  }
+  return data || {};
+}
+
+function _initQwenReasoningControl() {
+  const row = document.getElementById('qwen-reasoning-row');
+  const select = document.getElementById('qwen-reasoning-level');
+  const status = document.getElementById('qwen-reasoning-status');
+  const menu = document.getElementById('model-picker-menu');
+  if (!row || !select || !status || !menu) return;
+  if (row.dataset.qwenReasoningBound === '1') return;
+  row.dataset.qwenReasoningBound = '1';
+
+  function setStatus(text, isError) {
+    status.textContent = text || '';
+    status.classList.toggle('error', !!isError);
+  }
+
+  async function load() {
+    if (_qwenSaving) return;
+    await _refreshLocalModelInventory();
+    if (!_updateQwenReasoningVisibility()) {
+      setStatus('');
+      return;
+    }
+    try {
+      const level = await _fetchQwenReasoningLevel();
+      select.value = level;
+      setStatus('');
+    } catch (_) {
+      setStatus('unavailable', true);
+    }
+  }
+
+  select.addEventListener('change', async () => {
+    if (_qwenSaving) return;
+    _qwenSaving = true;
+    select.disabled = true;
+    setStatus('Saving…');
+    try {
+      const result = await _saveQwenReasoningLevel(select.value);
+      if (result.level && _QWEN_LEVELS.indexOf(result.level) >= 0) select.value = result.level;
+      if (result.restart_completed) {
+        setStatus(result.warmup === 'FAILED' ? 'Ready — first reply may be slower' : 'Saved — model ready');
+      } else {
+        setStatus('Saved — applies next load');
+      }
+    } catch (error) {
+      const detail = error && error.message ? error.message : '';
+      setStatus(detail.includes('was saved') ? 'Saved — restart failed' : 'Save failed', true);
+    } finally {
+      select.disabled = false;
+      _qwenSaving = false;
+    }
+  });
+
+  document.addEventListener('odysseus:model-picker-opened', load);
 }

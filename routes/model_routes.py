@@ -7,6 +7,7 @@ import json
 import hashlib
 import ipaddress
 import socket
+import threading
 import time as _time
 import logging
 import httpx
@@ -19,6 +20,8 @@ from fastapi.responses import StreamingResponse
 from core.database import SessionLocal, ModelEndpoint, Session as DbSession
 from core.log_safety import redact_url as _redact_url_for_log
 from core.middleware import require_admin
+from src import local_model_lifecycle as _local_models
+from src import qwen_reasoning as _qwen_reasoning
 from src.constants import COOKBOOK_STATE_FILE
 from src.llm_core import _detect_provider, _host_match, ANTHROPIC_MODELS
 from src.tls_overrides import llm_verify
@@ -2713,5 +2716,113 @@ def setup_model_routes(model_discovery):
         settings["disabled_tools"] = body.disabled
         _save_settings(settings)
         return {"ok": True, "disabled": body.disabled}
+
+    # ── Installed local model lifecycle ──
+
+    @router.get("/local-models")
+    def get_local_models():
+        """List installed manager-owned models without exposing local paths."""
+        try:
+            return _local_models.get_local_model_inventory()
+        except (OSError, ValueError, _local_models.LocalModelError):
+            # The local manager is an optional Windows installation.  Keep the
+            # ordinary/cloud model picker usable on every other deployment.
+            return {
+                "available": False,
+                "state": "UNAVAILABLE",
+                "activeModelKey": None,
+                "endpointUrl": None,
+                "models": [],
+            }
+
+    @router.post("/local-models/{model_key}/activation")
+    def activate_local_model(model_key: str, request: Request):
+        """Stop the current local model, load the selected model, and await readiness."""
+        require_admin(request)
+        try:
+            return _local_models.activate_local_model(model_key)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="local model not found")
+        except _local_models.LocalModelBusyError:
+            raise HTTPException(
+                status_code=409,
+                detail="another local model change is already in progress",
+            )
+        except (OSError, ValueError, _local_models.LocalModelError):
+            raise HTTPException(status_code=503, detail="local model change failed")
+
+    # ── Local Qwen reasoning effort ──
+
+    @router.get("/models/qwen/reasoning-effort")
+    def get_qwen_reasoning_effort():
+        try:
+            level = _qwen_reasoning.get_reasoning_level()
+        except (OSError, ValueError):
+            raise HTTPException(status_code=503, detail="local Qwen model registry is unavailable")
+        return {"level": level}
+
+    class ReasoningEffortUpdate(BaseModel):
+        level: str
+
+    @router.post("/models/qwen/reasoning-effort")
+    def set_qwen_reasoning_effort(body: ReasoningEffortUpdate, request: Request):
+        require_admin(request)
+        level = body.level.strip().lower()
+        if level not in _qwen_reasoning.REASONING_LEVELS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"level must be one of {', '.join(_qwen_reasoning.REASONING_LEVELS)}",
+            )
+        try:
+            inventory = _local_models.get_local_model_inventory()
+            qwen_active = (
+                inventory.get("activeModelKey") == _qwen_reasoning.MODEL_KEY
+                and inventory.get("state") in {"READY", "LOADING"}
+            )
+            result = _qwen_reasoning.set_reasoning_level(
+                level,
+                # Persist first; the shared lifecycle controller performs the
+                # serialized, readiness-checked restart below when required.
+                is_running=lambda: False,
+            )
+        except (OSError, ValueError):
+            raise HTTPException(status_code=503, detail="local Qwen model registry is unavailable")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="qwen model not found in registry")
+
+        if not qwen_active:
+            return {
+                **result,
+                "restart_scheduled": False,
+                "restart_completed": False,
+                "state": "AVAILABLE",
+                "warmup": "SKIPPED",
+            }
+
+        try:
+            restarted = _local_models.activate_local_model(
+                _qwen_reasoning.MODEL_KEY,
+                force_restart=True,
+            )
+        except _local_models.LocalModelBusyError:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "reasoning effort was saved; another local model change "
+                    "is already in progress"
+                ),
+            )
+        except (OSError, ValueError, _local_models.LocalModelError):
+            raise HTTPException(
+                status_code=503,
+                detail="reasoning effort was saved but the local Qwen restart failed",
+            )
+        return {
+            **result,
+            "restart_scheduled": True,
+            "restart_completed": True,
+            "state": restarted.get("state", "READY"),
+            "warmup": restarted.get("warmup", "FAILED"),
+        }
 
     return router

@@ -522,6 +522,9 @@ def setup_mcp_routes(mcp_manager: McpManager):
 
     async def _exchange_and_connect(server_id: str, code: str, request: Request):
         """Exchange auth code for tokens and connect the MCP server."""
+        from src.privacy_policy import require_capability  # PRV-003
+
+        require_capability("network-mcp")
         db = SessionLocal()
         try:
             srv = db.query(McpServer).filter(McpServer.id == server_id).first()

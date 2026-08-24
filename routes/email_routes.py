@@ -6039,6 +6039,8 @@ def setup_email_routes():
     ):
         import urllib.parse
         from fastapi.responses import RedirectResponse as _RR
+        from src.privacy_policy import require_capability  # PRV-003
+        require_capability("email-sync")
         if error:
             return _RR("/?section=integrations&email_oauth_error=google_error")
         if not code or not state:

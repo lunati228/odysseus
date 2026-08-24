@@ -2,6 +2,7 @@
 """Application-wide constants and configuration values."""
 import os
 
+from src.privacy_mode import confine_path, is_privacy_mode, validate_privacy_data_root
 from src.runtime_paths import get_app_root, get_default_data_dir
 
 APP_VERSION = "1.0.2"
@@ -9,7 +10,10 @@ APP_VERSION = "1.0.2"
 # Base paths
 BASE_DIR = os.path.join(get_app_root(), "")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
-DATA_DIR = os.getenv("ODYSSEUS_DATA_DIR", get_default_data_dir())
+if is_privacy_mode():
+    DATA_DIR = str(validate_privacy_data_root(os.getenv("ODYSSEUS_DATA_DIR")))
+else:
+    DATA_DIR = os.getenv("ODYSSEUS_DATA_DIR", get_default_data_dir())
 
 # Data file paths
 # Single source of truth: every persisted file/dir lives under DATA_DIR, which
@@ -55,14 +59,39 @@ GALLERY_UPLOADS_DIR = os.path.join(DATA_DIR, "gallery_uploads")
 MEMORY_VECTORS_DIR = os.path.join(DATA_DIR, "memory_vectors")
 
 # Paths with an intentional dedicated env override, defaulting under DATA_DIR.
-MAIL_ATTACHMENTS_DIR = os.getenv("ODYSSEUS_MAIL_ATTACHMENTS_DIR", os.path.join(DATA_DIR, "mail-attachments"))
+if is_privacy_mode():
+    _mail_attachments_raw = os.getenv(
+        "ODYSSEUS_MAIL_ATTACHMENTS_DIR",
+        os.path.join(DATA_DIR, "mail-attachments"),
+    )
+    MAIL_ATTACHMENTS_DIR = str(
+        confine_path(
+            _mail_attachments_raw,
+            DATA_DIR,
+            "ODYSSEUS_MAIL_ATTACHMENTS_DIR",
+        )
+    )
+else:
+    MAIL_ATTACHMENTS_DIR = os.getenv(
+        "ODYSSEUS_MAIL_ATTACHMENTS_DIR",
+        os.path.join(DATA_DIR, "mail-attachments"),
+    )
 # `or` (not os.getenv's default arg) so a PRESENT-but-EMPTY value falls back to
 # the default. docker-compose.yml injects `FASTEMBED_CACHE_PATH=${FASTEMBED_CACHE_PATH:-}`,
 # which sets the var to "" when the host hasn't defined it. os.getenv(name, default)
 # only returns the default when the var is ABSENT, so the empty string would win →
 # os.makedirs("") raises [Errno 2] No such file or directory: '' → FastEmbed fails to
 # init and all vector features (RAG, semantic memory, tool index) silently degrade.
-FASTEMBED_CACHE_DIR = os.getenv("FASTEMBED_CACHE_PATH") or os.path.join(DATA_DIR, "fastembed_cache")
+_fastembed_cache_raw = os.getenv("FASTEMBED_CACHE_PATH") or os.path.join(
+    DATA_DIR,
+    "fastembed_cache",
+)
+if is_privacy_mode():
+    FASTEMBED_CACHE_DIR = str(
+        confine_path(_fastembed_cache_raw, DATA_DIR, "FASTEMBED_CACHE_PATH")
+    )
+else:
+    FASTEMBED_CACHE_DIR = _fastembed_cache_raw
 
 # Agent tool output limits (single source of truth — imported by tool_execution.py,
 # tool_implementations.py, agent_tools.py, and any other module that needs them)

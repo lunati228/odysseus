@@ -96,6 +96,67 @@ def test_agent_loop_expands_browser_mcp_tools_from_connected_server():
     assert "_relevant_tools = _expand_browser_mcp_tools(_relevant_tools, mcp_mgr)" in source
 
 
+def test_privacy_offer_filter_keeps_only_native_and_builtin_browser_tools():
+    """Privacy filtering must not remove the qualified Brave fallback tools."""
+    from src.agent_loop import _filter_privacy_offer_tools
+
+    offered = _filter_privacy_offer_tools({
+        "web_search",
+        "ask_user",
+        "bash",
+        "mcp__builtin_browser__browser_navigate",
+        "mcp__builtin_browser__browser_snapshot",
+        "mcp__filesystem__read_file",
+    })
+
+    assert offered == {
+        "web_search",
+        "ask_user",
+        "mcp__builtin_browser__browser_navigate",
+        "mcp__builtin_browser__browser_snapshot",
+    }
+
+
+def test_privacy_browser_guidance_uses_the_real_playwright_tool_name():
+    source = (
+        Path(__file__).resolve().parent.parent / "src" / "agent_loop.py"
+    ).read_text(encoding="utf-8")
+
+    assert "`mcp__builtin_browser__browser_navigate`" in source
+    assert "`mcp__builtin_browser__navigate`" not in source
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_identity", "forbidden_identity"),
+    [
+        (
+            "huihui-qwen3.8-27b-abliterated-q6-k-l",
+            "Huihui Qwen3.8 27B",
+            "Gemma 4 12B",
+        ),
+        (
+            "gemma-4-12b-it-qat-q4-k-xl",
+            "Gemma 4 12B",
+            "Huihui Qwen3.8 27B",
+        ),
+    ],
+)
+def test_privacy_browser_guidance_uses_the_active_local_model_identity(
+    model,
+    expected_identity,
+    forbidden_identity,
+):
+    from src.agent_loop import _privacy_agent_guidance
+
+    guidance = _privacy_agent_guidance(model)
+
+    assert expected_identity in guidance
+    assert forbidden_identity not in guidance
+    assert "Tor" in guidance
+    assert "Brave" in guidance
+    assert "`mcp__builtin_browser__browser_navigate`" in guidance
+
+
 def test_disabled_tools_respects_missing_vs_explicit_toggles():
     """Bash still defers to privileges, but web is an explicit per-turn opt-in.
     """

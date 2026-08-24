@@ -87,7 +87,15 @@ def chatgpt_headers(access_token: Optional[str]) -> Dict[str, str]:
     return headers
 
 
+def _require_cloud_models() -> None:
+    """PRV-003: every outbound call in this module is a cloud-model call."""
+    from src.privacy_policy import require_capability
+
+    require_capability("cloud-models")
+
+
 def fetch_available_models(access_token: str, timeout: float = 10.0) -> list[str]:
+    _require_cloud_models()
     if not access_token:
         return []
     try:
@@ -166,6 +174,7 @@ def _json_or_error(response: httpx.Response, action: str) -> Dict[str, Any]:
 
 
 def request_device_code(timeout: float = 15.0) -> Dict[str, Any]:
+    _require_cloud_models()
     response = httpx.post(
         f"{CHATGPT_OAUTH_ISSUER}/api/accounts/deviceauth/usercode",
         json={"client_id": CHATGPT_OAUTH_CLIENT_ID},
@@ -182,6 +191,7 @@ def request_device_code(timeout: float = 15.0) -> Dict[str, Any]:
 
 
 def poll_device_auth(device_auth_id: str, user_code: str, timeout: float = 15.0) -> Dict[str, Any]:
+    _require_cloud_models()
     response = httpx.post(
         f"{CHATGPT_OAUTH_ISSUER}/api/accounts/deviceauth/token",
         json={"device_auth_id": device_auth_id, "user_code": user_code},
@@ -194,6 +204,7 @@ def poll_device_auth(device_auth_id: str, user_code: str, timeout: float = 15.0)
 
 
 def exchange_authorization_code(authorization_code: str, code_verifier: str, timeout: float = 15.0) -> Dict[str, Any]:
+    _require_cloud_models()
     response = httpx.post(
         CHATGPT_OAUTH_TOKEN_URL,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -213,6 +224,7 @@ def exchange_authorization_code(authorization_code: str, code_verifier: str, tim
 
 
 def refresh_oauth_tokens(access_token: str, refresh_token: str, timeout: float = 20.0) -> Dict[str, Any]:
+    _require_cloud_models()
     del access_token
     if not refresh_token:
         raise ChatGPTSubscriptionReauthRequired("ChatGPT Subscription is missing a refresh token. Reconnect the provider.")

@@ -277,6 +277,8 @@ def fetch_collection_models(source, timeout=20, max_pages=20):
         "limit": "100",
         "expand": "true",
     })
+    from src.privacy_policy import require_capability  # PRV-003
+    require_capability("model-gallery")
     url = f"{HF_COLLECTIONS_URL}?{params}"
     models = {}
     pages = 0

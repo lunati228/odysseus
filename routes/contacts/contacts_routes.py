@@ -75,6 +75,14 @@ def _validate_carddav_url(url: str) -> str:
 
 
 def _carddav_base_url(cfg: Dict) -> str:
+    # PRV-003. Every CardDAV network path in this module resolves its target
+    # through here -- fetch, create, import, update and delete -- so one guard
+    # covers all five call sites. Deliberately NOT placed in
+    # _get_carddav_config(), which _carddav_configured() also calls: that is a
+    # status read, and the local-JSON contact fallback must keep working in the
+    # privacy profile.
+    from src.privacy_policy import require_capability
+    require_capability("contacts-sync")
     return _validate_carddav_url(cfg.get("url") or "")
 
 

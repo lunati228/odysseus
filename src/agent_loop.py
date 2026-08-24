@@ -72,6 +72,94 @@ logger = logging.getLogger(__name__)
 _BROWSER_MCP_PREFIX = "mcp__builtin_browser__"
 
 
+class _PrivacyWebFallbackState:
+    """Bound Tor retries and unlock the isolated Brave fallback after failure."""
+
+    def __init__(self, *, browser_explicit: bool):
+        self._browser_explicit = browser_explicit
+        self._failed_tor_calls: set[str] = set()
+        self._browser_calls: set[str] = set()
+
+    @property
+    def browser_available(self) -> bool:
+        return self._browser_explicit or bool(self._failed_tor_calls)
+
+    @staticmethod
+    def _signature(tool_name: str, content: str) -> str:
+        normalized = (content or "").strip()
+        if normalized.startswith(("{", "[")):
+            try:
+                normalized = json.dumps(
+                    json.loads(normalized),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        return f"{tool_name}:{normalized}"
+
+    @staticmethod
+    def _failed(result: Dict[str, Any]) -> bool:
+        return bool(result.get("error")) or result.get("exit_code") not in (0, None)
+
+    def preflight(self, tool_name: str, content: str) -> Optional[Dict[str, Any]]:
+        signature = self._signature(tool_name, content)
+        if tool_name in WEB_TOOL_NAMES and signature in self._failed_tor_calls:
+            return {
+                "error": "The identical Tor request already failed; use the Brave fallback once or report the block.",
+                "exit_code": 1,
+                "privacy_guard": "repeated_tor_call",
+            }
+        if tool_name.startswith(_BROWSER_MCP_PREFIX):
+            if not self.browser_available:
+                return {
+                    "error": "Try the Tor web tool first; Brave is a fallback unless the user explicitly requested browser interaction.",
+                    "exit_code": 1,
+                    "privacy_guard": "browser_before_tor_failure",
+                }
+            if signature in self._browser_calls:
+                return {
+                    "error": "The identical Brave browser action already ran; do not retry it in a loop.",
+                    "exit_code": 1,
+                    "privacy_guard": "repeated_browser_call",
+                }
+        return None
+
+    def record_result(
+        self,
+        tool_name: str,
+        content: str,
+        result: Dict[str, Any],
+    ) -> None:
+        signature = self._signature(tool_name, content)
+        if tool_name in WEB_TOOL_NAMES and self._failed(result):
+            self._failed_tor_calls.add(signature)
+            result.setdefault(
+                "privacy_fallback",
+                "Tor failed. Use mcp__builtin_browser__browser_navigate once, then report plainly if Brave also fails.",
+            )
+        elif tool_name.startswith(_BROWSER_MCP_PREFIX):
+            self._browser_calls.add(signature)
+            if self._failed(result):
+                result.setdefault(
+                    "privacy_fallback",
+                    "The Brave fallback failed. Do not repeat the identical action; report the block plainly.",
+                )
+
+
+def _filter_privacy_offer_tools(
+    tool_names: Optional[Set[str]],
+) -> Optional[Set[str]]:
+    """Keep the exact tools that Privacy Workspace permits the model to see."""
+    if tool_names is None:
+        return None
+
+    from src.privacy_policy import is_privacy_allowed_agent_tool
+
+    return {name for name in tool_names if is_privacy_allowed_agent_tool(name)}
+
+
 def _expand_browser_mcp_tools(tool_names: Set[str], mcp_mgr) -> Set[str]:
     """Expand browser intent to every connected Playwright MCP tool.
 
@@ -2173,6 +2261,45 @@ def _recent_context_for_retrieval(messages: List[Dict], max_user: int = 3, max_c
             break
     return "\n".join(collected)[:max_chars]
 
+_PRIVACY_AGENT_NETWORK_GUIDANCE = """\
+## Privacy Workspace network rules (IMPORTANT)
+- You are in the Privacy Workspace. ALL web traffic is routed through the Tor network automatically by the backend. `web_search` and `web_fetch` never touch the user's direct internet connection, and there is NO direct fallback.
+- Native tools are limited to `web_search`, `web_fetch`, `ask_user`, and `update_plan`. There is NO shell, Python, curl, or scraping tool.
+- Some sites block Tor or require JavaScript. Common failures you will see:
+  - Reddit JSON/search endpoints often return HTTP 403 through Tor.
+  - Pages that return a missing or non-allowlisted content type are rejected as `ContentTypeNotAllowed` or `BlockedByPrivacyPolicy`.
+- If a fetch returns one of those errors, do NOT retry the same URL more than once.
+- FALLBACK: when Tor fails, use the built-in browser MCP tools if they are listed in this session (names start with `mcp__builtin_browser__`, e.g. `mcp__builtin_browser__browser_navigate`). They open Brave through the authenticated Windscribe VPN proxy. Prefer `mcp__builtin_browser__browser_navigate` to open the URL, then read the page content it returns. This is the ONLY fallback; never attempt a direct connection.
+- If both Tor and the browser fallback fail, report the block plainly instead of pretending to have read the page.
+"""
+
+
+def _privacy_agent_guidance(model: str) -> str:
+    """Return fail-closed network rules with the active local model identity."""
+    normalized = (model or "").strip().lower()
+    if "gemma" in normalized:
+        identity = (
+            "- You are Gemma 4 12B (Gemma family, created by Google), "
+            "running locally in Odysseus. You are NOT Qwen, Claude, "
+            "Anthropic, OpenAI, or Gemini. Never claim a different model "
+            "identity or an unverifiable knowledge cutoff."
+        )
+    elif "qwen3.8" in normalized or "qwen-3.8" in normalized:
+        identity = (
+            "- You are Huihui Qwen3.8 27B (Qwen 3.8 family, created by "
+            "Alibaba Cloud), running locally in Odysseus. You are NOT "
+            "Gemma, Claude, Anthropic, OpenAI, or Gemini. Never claim a "
+            "different model identity or an unverifiable knowledge cutoff."
+        )
+    else:
+        identity = (
+            "- You are a local model running in Odysseus. Do not claim a "
+            "different model identity or an unverifiable knowledge cutoff."
+        )
+    heading, rules = _PRIVACY_AGENT_NETWORK_GUIDANCE.split("\n", 1)
+    return f"{heading}\n{identity}\n{rules}"
+
+
 def _strip_agent_injected_messages(messages: List[Dict]) -> List[Dict]:
     """Remove route-specific prompt/context before building another route."""
 
@@ -2218,7 +2345,6 @@ def _ody_qwen_temperature_cap(temperature):
         return min(float(temperature if temperature is not None else 0.2), 0.2)
     except (TypeError, ValueError):
         return 0.2
-
 
 def _build_system_prompt(
     messages: List[Dict],
@@ -2283,6 +2409,15 @@ def _build_system_prompt(
     mcp_schemas = []
     if mcp_mgr:
         mcp_schemas = mcp_mgr.get_all_openai_schemas(mcp_disabled_map or {})
+
+    from src.privacy_mode import is_privacy_mode as _schema_privacy_check
+    if _schema_privacy_check():
+        _privacy_browser_prefix = "mcp__builtin_browser__"
+        mcp_schemas = [
+            s for s in mcp_schemas
+            if (s.get("function", {}).get("name") or s.get("name") or "")
+            .startswith(_privacy_browser_prefix)
+        ]
 
     set_active_model(model)
 
@@ -2599,6 +2734,10 @@ def _build_system_prompt(
         and (set(relevant_tools) & _WORKSPACE_TERMINUS_TOOLS)
     ):
         agent_prompt += _local_computer_rules()
+
+    from src.privacy_mode import is_privacy_mode as _is_privacy_mode
+    if _is_privacy_mode():
+        agent_prompt += "\n\n" + _privacy_agent_guidance(model)
 
     # When creating email documents, instruct the AI on the format
     if relevant_tools and not suppress_local_context and (_EMAIL_TOOL_HINTS & set(relevant_tools)):
@@ -3489,6 +3628,33 @@ async def stream_agent_loop(
         if tool_policy.disable_mcp:
             mcp_mgr = None
     guide_only = bool(tool_policy and tool_policy.mode == "guide_only")
+    from src.privacy_policy import (
+        PRIVACY_AGENT_ALLOWED_TOOLS,
+        privacy_tool_call_limit,
+    )
+    from src.privacy_mode import is_privacy_mode
+
+    _privacy_mode_active = is_privacy_mode()
+    if _privacy_mode_active:
+        # Offer-side clamp. Execution independently re-checks membership.
+        from src.tool_policy import known_tool_names
+
+        disabled_tools.update(
+            known_tool_names() - set(PRIVACY_AGENT_ALLOWED_TOOLS)
+        )
+        relevant_tools = _filter_privacy_offer_tools(relevant_tools)
+        forced_tools = _filter_privacy_offer_tools(forced_tools)
+        max_tool_calls = privacy_tool_call_limit(max_tool_calls)
+    _privacy_web_fallback = (
+        _PrivacyWebFallbackState(
+            browser_explicit=bool(
+                forced_tools
+                and any(name.startswith(_BROWSER_MCP_PREFIX) for name in forced_tools)
+            )
+        )
+        if _privacy_mode_active
+        else None
+    )
     public_blocked_tools = blocked_tools_for_owner(owner)
     if public_blocked_tools:
         disabled_tools.update(public_blocked_tools)
@@ -4509,7 +4675,13 @@ async def stream_agent_loop(
                 ]
             return _filter_route_tool_schemas(schemas)
 
-        wants_mcp = any(keyword in _last_user.lower() for keyword in _MCP_KEYWORDS)
+        wants_mcp = (
+            any(keyword in _last_user.lower() for keyword in _MCP_KEYWORDS)
+            or bool(
+                _privacy_web_fallback
+                and _privacy_web_fallback.browser_available
+            )
+        )
         schemas = route_mcp_schemas if wants_mcp and route_mcp_schemas else []
         return _filter_route_tool_schemas(schemas)
 
@@ -4765,6 +4937,32 @@ async def stream_agent_loop(
         round_response = ""
         round_reasoning = ""  # reasoning_content deltas (DeepSeek-thinking, vLLM --reasoning-parser)
         native_tool_calls = []  # populated if model uses function calling
+
+        # A failed Tor call unlocks the isolated browser fallback. Refresh the
+        # connected browser schemas at that point because they may not have
+        # been available during the initial prompt build.
+        if (
+            _privacy_web_fallback
+            and _privacy_web_fallback.browser_available
+            and mcp_mgr
+        ):
+            try:
+                _fresh_browser_schemas = [
+                    schema
+                    for schema in mcp_mgr.get_all_openai_schemas(_mcp_disabled_map)
+                    if (schema.get("function", {}).get("name") or "").startswith(
+                        _BROWSER_MCP_PREFIX
+                    )
+                ]
+                if _fresh_browser_schemas:
+                    mcp_schemas = _fresh_browser_schemas
+                    if _relevant_tools is not None:
+                        _relevant_tools.update(
+                            schema["function"]["name"]
+                            for schema in _fresh_browser_schemas
+                        )
+            except Exception as exc:
+                logger.warning("Failed to refresh privacy browser schemas: %s", exc)
 
         _active_route_state = {
             "messages": messages,
@@ -5652,7 +5850,17 @@ async def stream_agent_loop(
             blocked_by_disabled_tools = bool(
                 disabled_tools and not policy_names.isdisjoint(disabled_tools)
             )
-            if (
+            _privacy_guard_result = (
+                _privacy_web_fallback.preflight(block.tool_type, block.content)
+                if _privacy_web_fallback
+                else None
+            )
+            _privacy_tool_executed = False
+            if _privacy_guard_result is not None:
+                desc = f"{block.tool_type}: PRIVACY GUARD"
+                result = _privacy_guard_result
+                logger.info("Privacy fallback guard blocked repeat: %s", block.tool_type)
+            elif (
                 (blocked_by_tool_policy or blocked_by_disabled_tools)
                 and not _ody_clamped_tool_allowed
             ):
@@ -5766,6 +5974,7 @@ async def stream_agent_loop(
                         block.tool_type,
                     )
             else:
+                _privacy_tool_executed = True
                 yield (
                     f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "full_command": full_command, "round": round_num})}\n\n'
                 )
@@ -5822,6 +6031,12 @@ async def stream_agent_loop(
                         except (asyncio.CancelledError, Exception):
                             pass
 
+            if _privacy_web_fallback and _privacy_tool_executed:
+                _privacy_web_fallback.record_result(
+                    block.tool_type,
+                    block.content,
+                    result,
+                )
             run_security.observe_tool_result(block.tool_type, result, block.content)
 
             # A skill the model just loaded can prescribe tools that weren't

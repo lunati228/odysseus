@@ -986,6 +986,8 @@ def setup_calendar_routes(upload_handler=None) -> APIRouter:
         {url, username, password} to test before saving, or {account_id} to
         test an already-saved account. Falls back to the first saved account
         when nothing is provided."""
+        from src.privacy_policy import require_capability  # PRV-003
+        require_capability("calendar-sync")
         owner = _require_user(request)
         try:
             body = await request.json()

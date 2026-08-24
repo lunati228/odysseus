@@ -117,6 +117,10 @@ class STTService:
     # ── API endpoint ──
 
     def _transcribe_api(self, audio_bytes: bytes, endpoint_id: str, model: str, language: str = "") -> Optional[str]:
+        # PRV-003: recorded audio is user content. Refuse before it is read
+        # from the request body into an outbound multipart body.
+        from src.privacy_policy import require_capability
+        require_capability("hosted-speech")
         from src.database import SessionLocal, ModelEndpoint
 
         db = SessionLocal()

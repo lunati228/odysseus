@@ -18,6 +18,12 @@ from src.research_utils import strip_thinking, is_low_quality
 
 from src.goal_based_extractor import EXTRACTOR_SYSTEM
 from src.prompt_security import untrusted_context_message
+from src.privacy_mode import is_privacy_mode
+from src.privacy_policy import (
+    CapabilityDenied,
+    bound_generated_query,
+    enforce_tool_call_budget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +247,9 @@ class DeepResearcher:
         self.findings: List[Dict] = []
         self.evolving_report: str = ""
         self.research_plan: str = ""
+        # PRV-006: one run-wide budget shared by the only two external
+        # operations this engine exposes: Tor search and Tor page fetch.
+        self.privacy_tool_calls_used: int = 0
 
     def cancel(self):
         """Request cooperative cancellation of the research loop."""
@@ -474,10 +483,22 @@ class DeepResearcher:
                 "that the report doesn't yet cover well."
             )
 
+        # Fetched pages are untrusted evidence. In Privacy Workspace they may
+        # inform a local report, but they are not allowed to choose a later
+        # outbound query. Standard Workspace keeps adaptive report-driven
+        # query generation.
+        query_context = report or "(No findings yet.)"
+        if is_privacy_mode():
+            query_context = (
+                "(The web-derived report is intentionally withheld from query "
+                "generation in Privacy Workspace. Use only the original "
+                "question and pre-fetch research plan.)"
+            )
+
         prompt = current_date_context() + QUERY_GEN_PROMPT.format(
             question=question,
             research_plan=self.research_plan or "(No plan — search broadly.)",
-            report=report or "(No findings yet.)",
+            report=query_context,
             round_num=round_num,
             num_queries=num_queries,
             round_instruction=round_instruction,
@@ -491,7 +512,23 @@ class DeepResearcher:
                 timeout=getattr(self, "query_timeout", 120),
             )
             queries = self._parse_json_array(response)
-            # Deduplicate
+            if is_privacy_mode():
+                bounded_queries: List[str] = []
+                for query in queries:
+                    try:
+                        safe_query = bound_generated_query(query)
+                    except CapabilityDenied:
+                        logger.warning(
+                            "Privacy Workspace refused an out-of-policy "
+                            "model-generated search query"
+                        )
+                        continue
+                    if safe_query not in bounded_queries:
+                        bounded_queries.append(safe_query)
+                    if len(bounded_queries) >= num_queries:
+                        break
+                queries = bounded_queries
+            # Deduplicate against the whole run after policy normalization.
             new_queries = [q for q in queries if q not in self.queries_used]
             self.queries_used.update(new_queries)
             logger.info(f"Round {round_num} queries: {new_queries}")
@@ -509,12 +546,18 @@ class DeepResearcher:
         """Search each query and extract relevant info from top results."""
         all_findings: List[Dict] = []
 
-        # Search all queries in parallel
-        search_tasks = [self._search(q) for q in queries]
+        # Reserve the run-wide privacy budget before scheduling concurrent
+        # operations. This keeps parallel accounting deterministic.
+        search_tasks = []
+        for query in queries:
+            if not self._reserve_privacy_tool_call():
+                break
+            search_tasks.append(self._search(query))
         search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
         # Collect URLs to fetch from all search results
         urls_to_fetch = []
+        selected_urls = set(self.urls_fetched)
         for result in search_results:
             if isinstance(result, Exception):
                 logger.warning(f"Search error: {result}")
@@ -523,13 +566,9 @@ class DeepResearcher:
                 continue
             for r in result:
                 url = r.get("url", "")
-                if url and url not in self.urls_fetched:
+                if url and url not in selected_urls:
                     urls_to_fetch.append(r)
-                    self.urls_fetched.add(url)
-                    self.analyzed_urls.append({
-                        "url": url,
-                        "title": r.get("title", "") or url,
-                    })
+                    selected_urls.add(url)
                 if len(urls_to_fetch) >= self.max_urls_per_round * len(queries):
                     break
 
@@ -545,7 +584,17 @@ class DeepResearcher:
             async with semaphore:
                 return await self._fetch_and_extract(result["url"], question, result.get("title", ""))
 
-        extract_tasks = [_bounded_extract(r) for r in urls_to_fetch]
+        extract_tasks = []
+        for result in urls_to_fetch:
+            if not self._reserve_privacy_tool_call():
+                break
+            url = result["url"]
+            self.urls_fetched.add(url)
+            self.analyzed_urls.append({
+                "url": url,
+                "title": result.get("title", "") or url,
+            })
+            extract_tasks.append(_bounded_extract(result))
         results_gathered = await asyncio.gather(*extract_tasks, return_exceptions=True)
 
         for result in results_gathered:
@@ -556,6 +605,18 @@ class DeepResearcher:
                 all_findings.append(result)
 
         return all_findings
+
+    def _reserve_privacy_tool_call(self) -> bool:
+        """Reserve one Tor search/fetch call, or return false at the hard cap."""
+        if not is_privacy_mode():
+            return True
+        try:
+            enforce_tool_call_budget(self.privacy_tool_calls_used)
+        except CapabilityDenied:
+            logger.warning("Privacy Workspace research call budget exhausted")
+            return False
+        self.privacy_tool_calls_used += 1
+        return True
 
     async def _search(self, query: str) -> List[Dict]:
         """Run a search query using the configured research search provider."""

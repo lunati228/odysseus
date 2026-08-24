@@ -16,13 +16,43 @@ SEARCH_CACHE_DIR = CACHE_DIR / "search"
 CONTENT_CACHE_DIR = CACHE_DIR / "content"
 CACHE_MAX_ENTRIES = 1000
 
+
+def disk_cache_enabled() -> bool:
+    """PRV-005: the privacy profile keeps no on-disk web cache.
+
+    A search cache entry is keyed on the query and stores the result set; a
+    content cache entry stores fetched page text. Both are exactly the private
+    material the vault exists to avoid writing at rest, so the privacy profile
+    does not merely point them at a different directory -- it does not use
+    them at all.
+    """
+    from src.privacy_mode import is_privacy_mode
+
+    return not is_privacy_mode()
+
+
+def require_disk_cache() -> None:
+    """Backstop refusal at the write itself.
+
+    ``disk_cache_enabled()`` is checked by the current callers. This is what
+    makes the property hold *by construction*: a future caller that forgets
+    the check still cannot write a cache entry in the privacy profile.
+    """
+    from src.privacy_policy import require_capability
+
+    require_capability("web-disk-cache")
+
+
 # Create cache directories. Guarded so an unwritable path (e.g. a read-only
 # mount) degrades to no-disk-cache instead of crashing module import.
-try:
-    SEARCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    CONTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-except OSError as _e:
-    logger.warning("Search cache directory unavailable (%s); disk cache disabled", _e)
+# Skipped entirely in the privacy profile: nothing may write here, so the
+# directories should not exist inside the vault to suggest otherwise.
+if disk_cache_enabled():
+    try:
+        SEARCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        CONTENT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as _e:
+        logger.warning("Search cache directory unavailable (%s); disk cache disabled", _e)
 
 # Track cache size for LRU eviction
 search_cache_index: Dict[str, datetime] = {}

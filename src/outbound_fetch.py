@@ -279,6 +279,11 @@ def _get_public_url(
     transport_factory: Callable[[ipaddress._BaseAddress], httpx.BaseTransport] | None = None,
 ) -> _CappedFetch:
     """Capped streaming GET with SSRF-guarded, DNS-pinned redirects."""
+    from src.privacy_policy import require_capability
+
+    # The privacy search path never calls this helper, but keep the shared
+    # upstream primitive fail-closed before DNS if a future caller does.
+    require_capability("direct-http")
     resolve_public_ips = resolve_public_ips or _resolve_public_ips
     transport_factory = transport_factory or _PinnedTransport
     cap = min(max_bytes or WEB_FETCH_SOFT_MAX_BYTES, WEB_FETCH_HARD_MAX_BYTES)

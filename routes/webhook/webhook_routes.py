@@ -236,6 +236,9 @@ def setup_webhook_routes(
 
     @router.post("/v1/chat")
     async def sync_chat(request: Request, body: SyncChatRequest):
+        from src.privacy_policy import require_capability  # PRV-003
+
+        require_capability("webhooks")
         if not getattr(request.state, "api_token", False):
             raise HTTPException(403, "This endpoint requires an API token")
         scopes = set(getattr(request.state, "api_token_scopes", []) or [])

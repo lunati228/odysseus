@@ -13,8 +13,14 @@ venv/
 # Environment
 .env
 .env.bak.*
+.env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 # Local uv lockfile (optional, per-platform — see "Faster installs with uv" in README)
+uv.lock
 requirements.lock
 
 # SOPS workflow — encrypted `secrets.env` is intentionally committable,

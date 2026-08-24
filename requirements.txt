@@ -4,6 +4,14 @@ python-multipart
 python-dotenv
 httpx
 httpcore>=1.0,<2.0
+# SOCKS5 backend for httpx, required by the Privacy Workspace Tor transport in
+# services/search/privacy_transport.py. Pinned because it sits on the privacy
+# egress path: an unexpected version change there is a security change, not a
+# routine upgrade. Provenance of the verified install (PRV-011):
+#   socksio 1.0.0 wheel, from PyPI, BSD-3-Clause
+#   sha256 95dc1f15f9b34e8d7b16f06d74b8ccf48f609af32ab33c608d08761c5dcbb1f3
+# The standard (non-privacy) code path does not use it.
+socksio==1.0.0
 pydantic>=2.13.4
 pydantic-settings>=2.14.1
 SQLAlchemy

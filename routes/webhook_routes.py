@@ -1,12 +1,7 @@
-"""Backward-compat shim — canonical location is routes/webhook/webhook_routes.py.
+"""Backward-compat shim; canonical module is routes/webhook/webhook_routes.py.
 
-This module is replaced in ``sys.modules`` by the canonical module object so
-that ``import routes.webhook_routes``, ``from routes.webhook_routes import X``,
-``importlib.import_module("routes.webhook_routes")``, and the
-``__import__("routes.webhook_routes", fromlist=[...])`` + ``setattr(wh_mod,
-...)`` pattern used by test_null_owner_gates.py all operate on the *same*
-object. Keeps existing import paths working after slice 2l (#4082/#4071).
-Source-introspection tests read the canonical file by path.
+The canonical module replaces this object in sys.modules so legacy imports and
+monkeypatches continue to operate on the same module after the upstream move.
 """
 
 import sys as _sys

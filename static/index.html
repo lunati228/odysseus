@@ -253,6 +253,17 @@
   <link rel="modulepreload" href="/static/js/markdown.js">
 </head>
 <body>
+  <aside class="privacy-workspace-control" id="privacy-workspace-control" data-profile="unknown" data-state="loading" aria-label="Workspace status and switcher">
+    <span class="privacy-workspace-current">
+      <span class="privacy-workspace-eyebrow">Workspace</span>
+      <strong id="privacy-workspace-label" aria-current="page">Unknown</strong>
+    </span>
+    <span class="privacy-workspace-transport" id="privacy-workspace-transport" role="status" aria-live="polite">Checking workspace status</span>
+    <button class="privacy-workspace-switch" id="privacy-workspace-switch" type="button" aria-label="Switch workspace" disabled>
+      <span class="privacy-workspace-switch-prefix">Switch to</span>
+      <span id="privacy-workspace-switch-label">Unavailable</span>
+    </button>
+  </aside>
   <!-- Loading overlay — hides all flashing until app is ready -->
   <div id="app-loader" style="position:fixed;inset:0;z-index:99999;background:var(--bg,#282c34);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;transition:opacity .3s">
     <div id="loader-wave" style="color:color-mix(in srgb, #9cdef2 62%, var(--brand-color,var(--red,#e06c75)));font-family:monospace;font-size:11px;opacity:.5;position:relative;padding-top:10px;line-height:1;white-space:pre">▁▂▃</div>
@@ -1060,6 +1071,15 @@
               </button>
             </div>
             <div class="model-picker-list" id="model-picker-list"></div>
+            <div class="model-picker-footer" id="qwen-reasoning-row" hidden>
+              <label class="qwen-reasoning-label" for="qwen-reasoning-level">Local Qwen reasoning</label>
+              <select class="qwen-reasoning-select" id="qwen-reasoning-level" aria-label="Local Qwen reasoning level">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="xhigh">Extra high</option>
+              </select>
+              <span class="qwen-reasoning-status" id="qwen-reasoning-status" role="status" aria-live="polite"></span>
+            </div>
           </div>
         </div>
         <script nonce="{{CSP_NONCE}}">
@@ -2586,6 +2606,7 @@
 <script type="module" src="/static/app.js?v=20260815toolapproval4"></script>  <!-- app.js must be LAST -->
   <script type="module" src="/static/js/init.js?v=20260715freshroot3"></script>
 <script type="module" src="/static/js/a11y.js"></script>
+<script type="module" src="/static/js/privacyWorkspace.js"></script>
 <script nonce="{{CSP_NONCE}}">if('serviceWorker' in navigator){navigator.serviceWorker.register('/static/sw.js').catch(()=>{});}</script>
 </body>
 </html>

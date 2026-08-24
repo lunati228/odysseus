@@ -762,6 +762,24 @@ async def _execute_tool_block_impl(
     (bash, python) so the agent loop can emit `tool_progress` SSE
     events while the command is in flight. Ignored by other tools.
     """
+    tool = block.tool_type
+    content = block.content
+
+    # Final PRV-003/PRV-006 backstop.  This must run before importing either
+    # tool implementation registry: those modules include subprocess,
+    # filesystem, MCP, and account-integration code.  Membership is
+    # allowlist-based, so a new upstream tool is denied until classified.
+    from src.privacy_policy import CapabilityDenied, require_privacy_agent_tool
+
+    try:
+        require_privacy_agent_tool(tool)
+    except CapabilityDenied as exc:
+        logger.warning("Privacy Workspace blocked a disallowed agent tool")
+        return (
+            f"{tool}: BLOCKED",
+            {"error": str(exc), "exit_code": 1, "blocked": True},
+        )
+
     from src.tool_implementations import (
         do_search_chats, do_manage_tasks,
         do_manage_skills, do_api_call, do_manage_notes,
@@ -792,9 +810,6 @@ async def _execute_tool_block_impl(
         dynamic_handlers = getattr(agent_tools_mod, "TOOL_HANDLERS", {})
     except ImportError:
         dynamic_handlers = {}
-
-    tool = block.tool_type
-    content = block.content
 
     # The block/disable gates below must match every policy-equivalent
     # spelling of the tool name (bare email names alias their mcp__email__
