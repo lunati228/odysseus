@@ -65,6 +65,7 @@ The dedicated PowerShell manager is the process owner:
 
 ~~~powershell
 $manager = Join-Path $env:ODYSSEUS_PRIVATE_HOME "bin\Odysseus-Private.ps1"
+& $manager -Action start-model -Model qwen
 & $manager -Action start-private
 & $manager -Action status
 ~~~
@@ -72,6 +73,14 @@ $manager = Join-Path $env:ODYSSEUS_PRIVATE_HOME "bin\Odysseus-Private.ps1"
 Use the manager's allowlisted model actions or the UI picker; do not start
 llama.cpp manually over a managed instance. It owns safe stop/start and
 listener identity checks.
+
+The installed runtime is deliberately on-demand: it has no Windows-login
+auto-start entry, so a stopped model consumes no RAM or VRAM. An operator-local
+launcher starts the model, Tor, and Privacy Workspace in that order, waits for
+readiness, and only then opens the loopback site. A normal HTTP bookmark cannot
+start a stopped Windows process; use the launcher, and use its paired stop
+action to release the owned processes when finished. Launcher paths and logs
+remain private installation data and are not tracked here.
 
 | Service | Expected local endpoint |
 | --- | --- |

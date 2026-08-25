@@ -17,6 +17,7 @@ decision.
 | 2026-08-24 | installed-runtime acceptance | Accepted a machine-local Qwen profile with xhigh reasoning and GPU-resident execution. Exact model, cache, context, device, memory, and benchmark details are retained only in an ignored local handoff. |
 | 2026-08-24 | live workflow acceptance | Gemma and Qwen each passed identity, manager/UI lifecycle, Tor search, and exact-approved Brave + Windscribe navigation. Qwen also passed low/medium/xhigh persistence and restart checks. |
 | 2026-08-25 | main-agent completion | Added user-unlimited agent/research counters, workspace-confined silent reads, exact approval for commands/file changes, Tor-first managed VPN-browser research fallback, authoritative llama.cpp vision detection, binary-safe attachments, live manager-reported context display, and the compact workspace shield. |
+| 2026-08-25 | reboot lifecycle acceptance | Added an operator-local, zero-idle-resource launcher that starts the model, Tor, and Privacy Workspace only on demand, plus a paired owned-process stop action. A cold launch passed app, Tor, model-context, vision, and browser-connection checks; no Windows-login auto-start entry was installed. |
 
 ## Verification boundary at this handoff
 
