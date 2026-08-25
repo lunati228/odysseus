@@ -21,11 +21,12 @@ protection from same-user malware.
 | Area | Current evidence | Important boundary |
 | --- | --- | --- |
 | Separate profiles | Standard and Privacy are selected before application imports; Privacy data and SQLite paths must be absolute, off-repository, and confined below the private root. | Switching a running process cannot safely change profile. |
-| Workspace switch | Both login and app UI expose a fail-closed Standard/Privacy switch. Navigation carries no chat or session state. | Restart an old process after an update if the switch reports an unavailable counterpart. |
+| Workspace switch | Login exposes the full switch; the app exposes the same fail-closed control as a compact shield beside Settings. Navigation carries no chat or session state. | Restart an old process after an update if the switch reports an unavailable counterpart. |
 | Research transport | Privacy search and page fetch use the local Tor SOCKS endpoint with remote DNS and no direct retry. | The wider application still has unproven egress surfaces; see PRV-003. |
-| Privacy authority | The profile allows Tor search/fetch, a numeric-loopback local model, and private storage; cloud providers, network MCP, shell, webhooks, sync, downloads, and background automation are denied. | Browser fallback is a narrow exception, not general browser authority. |
+| Privacy authority | Tor search/fetch, the managed VPN browser, a numeric-loopback local model, private storage, and workspace-confined coding tools are allowlisted. Reads and browsing are silent; commands and file changes require exact approval. | An approved shell command can create its own network traffic, so review command approvals as a separate privacy boundary. |
 | Local model control | The picker switches only registered local models through the external manager, verifies loopback readiness, and redacts paths and hashes. | Qwen is the model under test, never a delegated coding/research agent unless the owner explicitly changes that rule. |
-| Browser fallback | Built-in Brave + Windscribe fallback is offered after Tor failure and requires an exact-action approval. | It remains subject to the browser/isolation acceptance gate. |
+| Browser fallback | Deep Research tries Tor first, then may use one managed Brave + Windscribe navigation without a second prompt. No direct HTTP fallback exists. | It remains subject to the browser/isolation acceptance gate. |
+| Vision attachments | Local llama.cpp capability metadata decides whether the main model receives image pixels. Images stay as multimodal blocks and binary files are refused by `read_file`. | A model response that mentions raw binary is a regression, not a supported vision path. |
 
 The broad post-upstream-merge regression run recorded 773 passes, 1 intentional
 skip, 1 inherited SQLAlchemy warning, and 88 JavaScript subtests. The final
@@ -49,6 +50,10 @@ The durable public contract is:
 - Qwen reasoning levels are low, medium, and xhigh;
 - the manager may leave prediction length uncapped, while generation still
   ends at EOS or the remaining total context;
+- the UI obtains the active context from the running local server, refreshes it
+  after a restart, and formats it in 1024-token units;
+- local vision is detected from llama.cpp's advertised modalities rather than
+  guessed from a quantized model filename;
 - paths come from `ODYSSEUS_PRIVATE_HOME`, the manager-owned data root, or the
   two explicit local-model path environment variables; and
 - changing quantization, context, device placement, or private model files is
@@ -87,11 +92,15 @@ file.
   cache, provider, and startup state is chosen at import time.
 - Keep private web search/fetch on socks5h Tor with remote DNS, HTTPS, strict
   URL and redirect validation, size/time bounds, and no direct fallback.
-- Treat retrieved pages as untrusted evidence. They cannot grant tools; query
-  length and research-tool calls are bounded.
+- Treat retrieved pages as untrusted evidence. They cannot grant tools; query,
+  page, and evidence size remain bounded even when the operator sets the agent
+  or research step counters to unlimited.
+- Keep workspace reads silent and confined. Require a fresh exact approval for
+  each command or file mutation; no approval covers a different action.
 - Keep private local-model traffic on numeric loopback only. Do not re-enable
   cloud fallback, remote embeddings/speech, webhooks, account sync, downloads,
-  shell, or network MCP in Privacy Workspace without a new security review.
+  unapproved shell actions, or arbitrary network MCP in Privacy Workspace
+  without a new security review.
 - Preserve fail-closed behavior. A malformed status, missing Tor, invalid
   endpoint, or unavailable fallback should stop the operation rather than guess.
 - Never put credentials, query text, prompts, private installed-model paths,

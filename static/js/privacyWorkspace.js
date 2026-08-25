@@ -10,14 +10,30 @@ const PROFILE_LABELS = {
 
 function getElements(documentRef) {
   if (!documentRef || typeof documentRef.getElementById !== 'function') return null;
-  const elements = {
+  const primary = {
     control: documentRef.getElementById('privacy-workspace-control'),
     label: documentRef.getElementById('privacy-workspace-label'),
     transport: documentRef.getElementById('privacy-workspace-transport'),
     button: documentRef.getElementById('privacy-workspace-switch'),
     targetLabel: documentRef.getElementById('privacy-workspace-switch-label'),
   };
-  return Object.values(elements).every(Boolean) ? elements : null;
+  if (!Object.values(primary).every(Boolean)) return null;
+
+  const groups = [primary];
+  if (typeof documentRef.querySelectorAll === 'function') {
+    for (const control of documentRef.querySelectorAll('[data-privacy-workspace-control]')) {
+      if (!control || typeof control.querySelector !== 'function') continue;
+      const mirror = {
+        control,
+        label: control.querySelector('[data-privacy-workspace-label]'),
+        transport: control.querySelector('[data-privacy-workspace-transport]'),
+        button: control.querySelector('[data-privacy-workspace-switch]'),
+        targetLabel: control.querySelector('[data-privacy-workspace-switch-label]'),
+      };
+      if (Object.values(mirror).every(Boolean)) groups.push(mirror);
+    }
+  }
+  return groups;
 }
 
 export function browserTimezoneHeaders({
@@ -81,35 +97,46 @@ export function normalizePrivacyWorkspaceStatus(payload) {
   };
 }
 
-function showUnknown(elements) {
-  elements.control.dataset.profile = 'unknown';
-  elements.control.dataset.state = 'unknown';
-  elements.label.textContent = 'Unknown';
-  elements.transport.hidden = false;
-  elements.transport.textContent = 'Workspace status unavailable';
-  elements.button.disabled = true;
-  elements.button.setAttribute('aria-label', 'Switch workspace');
-  elements.targetLabel.textContent = 'Unavailable';
+function showUnknown(elementGroups) {
+  for (const elements of elementGroups) {
+    elements.control.dataset.profile = 'unknown';
+    elements.control.dataset.state = 'unknown';
+    elements.label.textContent = 'Unknown';
+    elements.transport.hidden = false;
+    elements.transport.textContent = 'Workspace status unavailable';
+    elements.button.disabled = true;
+    elements.button.setAttribute('aria-label', 'Switch workspace');
+    elements.button.setAttribute('title', 'Workspace status unavailable');
+    elements.targetLabel.textContent = 'Unavailable';
+  }
 }
 
-function showStatus(elements, status, navigate) {
-  elements.control.dataset.profile = status.profile;
-  elements.label.textContent = status.label;
-  elements.button.disabled = false;
-  elements.button.setAttribute('aria-label', `Switch to ${status.targetLabel}`);
-  elements.targetLabel.textContent = status.targetLabel;
+function showStatus(elementGroups, status, navigate) {
+  for (const elements of elementGroups) {
+    elements.control.dataset.profile = status.profile;
+    elements.label.textContent = status.label;
+    elements.button.disabled = false;
+    elements.button.setAttribute('aria-label', `Switch to ${status.targetLabel}`);
+    elements.targetLabel.textContent = status.targetLabel;
 
-  if (status.profile === 'privacy') {
-    elements.control.dataset.state = status.transport.ready ? 'ready' : 'unavailable';
-    elements.transport.hidden = false;
-    elements.transport.textContent = `${status.transport.label} ${status.transport.ready ? 'ready' : 'unavailable'}`;
-  } else {
-    elements.control.dataset.state = 'ready';
-    elements.transport.textContent = '';
-    elements.transport.hidden = true;
+    let transportText = '';
+    if (status.profile === 'privacy') {
+      elements.control.dataset.state = status.transport.ready ? 'ready' : 'unavailable';
+      elements.transport.hidden = false;
+      transportText = `${status.transport.label} ${status.transport.ready ? 'ready' : 'unavailable'}`;
+      elements.transport.textContent = transportText;
+    } else {
+      elements.control.dataset.state = 'ready';
+      elements.transport.textContent = '';
+      elements.transport.hidden = true;
+      transportText = 'Direct connection';
+    }
+
+    elements.button.setAttribute(
+      'title', `${status.label} · ${transportText} · Switch to ${status.targetLabel}`
+    );
+    elements.button.addEventListener('click', () => navigate(status.counterpartUrl));
   }
-
-  elements.button.addEventListener('click', () => navigate(status.counterpartUrl));
 }
 
 export async function mountPrivacyWorkspace({
@@ -117,8 +144,8 @@ export async function mountPrivacyWorkspace({
   fetchImpl,
   navigate,
 } = {}) {
-  const elements = getElements(documentRef);
-  if (!elements || typeof fetchImpl !== 'function' || typeof navigate !== 'function') return null;
+  const elementGroups = getElements(documentRef);
+  if (!elementGroups || typeof fetchImpl !== 'function' || typeof navigate !== 'function') return null;
 
   try {
     const response = await fetchImpl(STATUS_ENDPOINT, {
@@ -130,10 +157,10 @@ export async function mountPrivacyWorkspace({
     if (!response || !response.ok) throw new Error('status unavailable');
     const status = normalizePrivacyWorkspaceStatus(await response.json());
     if (!status) throw new Error('invalid status');
-    showStatus(elements, status, navigate);
+    showStatus(elementGroups, status, navigate);
     return status;
   } catch (_) {
-    showUnknown(elements);
+    showUnknown(elementGroups);
     return null;
   }
 }

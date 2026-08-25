@@ -29,17 +29,23 @@ migrate chats, accounts, uploads, memory, sessions, or storage.
 The allowed authority is intentionally small:
 
 - Tor-routed search and bounded page fetch;
-- a local model at numeric 127.0.0.1 with an explicit port; and
-- storage confined below the private vault.
+- a local model at numeric 127.0.0.1 with an explicit port;
+- storage confined below the private vault;
+- workspace-confined read-only coding tools; and
+- commands/file mutations only after a sealed exact user approval.
 
-Cloud models and fallbacks, API-key search, hosted embeddings/speech, network
-MCP, shell, webhooks, account sync, cookbook/download activity, extensions,
+Cloud models and fallbacks, API-key search, hosted embeddings/speech, arbitrary
+network MCP, webhooks, account sync, cookbook/download activity, extensions,
 background automation, telemetry, plaintext search analytics, and disk page
-caches are denied in Privacy Workspace.
+caches are denied in Privacy Workspace. An explicitly approved shell command
+is operator-authorized code execution and can create traffic outside the web
+research route; it is not covered by the Tor/Brave transport claim.
 
 A built-in Brave + Windscribe browser fallback may be used only after Tor
-failure and an exact-action approval. It is a recovery mechanism for a
-specific request, not a grant of general browser/network authority.
+failure. Deep Research may use one managed navigation without another prompt,
+but only after re-validating the isolated browser role and mandatory proxy. It
+is a recovery mechanism for a specific request, not general browser/network
+authority, and it has no direct-client fallback.
 
 ## Tor research transport
 
@@ -55,6 +61,12 @@ Privacy search and fetch must:
 - never retry a failed private request through a direct client; and
 - treat returned pages as untrusted evidence, never as instructions or a source
   of additional tool authority.
+
+Agent and Deep Research step counters may be configured as zero for no fixed
+count ceiling. That changes persistence, not authority: the allowlist,
+workspace confinement, exact command/file approvals, URL validation, and
+per-page evidence bounds still apply. Deep Research remains a single local
+model workflow rather than launching multiple concurrent model agents.
 
 The canonical offline proof includes a fake SOCKS server that sees a hostname
 request and a guard showing zero local target DNS. A listening SOCKS port alone

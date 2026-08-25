@@ -7,6 +7,7 @@ drives every decision: what to search, what's relevant, what's missing, and
 when to stop.  Inspired by Alibaba's IterResearch approach.
 """
 import asyncio
+import itertools
 import json
 import logging
 import re
@@ -23,6 +24,7 @@ from src.privacy_policy import (
     CapabilityDenied,
     bound_generated_query,
     enforce_tool_call_budget,
+    privacy_tool_call_limit,
 )
 
 logger = logging.getLogger(__name__)
@@ -215,17 +217,32 @@ class DeepResearcher:
         progress_callback: Optional[Callable] = None,
         search_provider: Optional[str] = None,
         category: Optional[str] = None,
+        privacy_tool_limit: Optional[int] = None,
     ):
         self.llm_endpoint = llm_endpoint
         self.llm_model = llm_model
         self.llm_headers = llm_headers
         self.search_provider_override = search_provider
         self.category = category
-        self.max_rounds = max_rounds
-        self.max_time = max_time
+        if privacy_tool_limit is None:
+            from src.settings import get_setting
+
+            privacy_tool_limit = get_setting("agent_max_tool_calls", 0)
+        self.privacy_tool_limit = privacy_tool_call_limit(privacy_tool_limit)
+        try:
+            self.max_rounds = max(0, int(max_rounds))
+        except (TypeError, ValueError):
+            self.max_rounds = 8
+        try:
+            self.max_time = max(0, int(max_time))
+        except (TypeError, ValueError):
+            self.max_time = 300
         self.max_urls_per_round = max_urls_per_round
         self.max_content_chars = max_content_chars
-        self.max_report_tokens = max_report_tokens
+        try:
+            self.max_report_tokens = max(0, int(max_report_tokens))
+        except (TypeError, ValueError):
+            self.max_report_tokens = 8192
         self.extraction_timeout = min(3600, max(15, int(extraction_timeout or 90)))
         self.planning_timeout = min(3600, max(15, int(planning_timeout or 90)))
         self.query_timeout = min(3600, max(15, int(query_timeout or 120)))
@@ -247,8 +264,9 @@ class DeepResearcher:
         self.findings: List[Dict] = []
         self.evolving_report: str = ""
         self.research_plan: str = ""
-        # PRV-006: one run-wide budget shared by the only two external
-        # operations this engine exposes: Tor search and Tor page fetch.
+        # PRV-006: one run-wide budget shared by the two logical external
+        # operations this engine exposes: search and page fetch. A Tor failure
+        # may use one managed Brave/VPN fallback inside the same reserved call.
         self.privacy_tool_calls_used: int = 0
 
     def cancel(self):
@@ -297,7 +315,7 @@ class DeepResearcher:
         self.findings = findings  # expose for handler
         consecutive_empty_rounds = 0
 
-        for round_num in range(1, self.max_rounds + 1):
+        for round_num in self._round_numbers():
             self.round_count = round_num
             if self._cancelled:
                 logger.info(f"Research cancelled after {round_num - 1} rounds")
@@ -402,6 +420,12 @@ class DeepResearcher:
         )
         return strip_thinking(response)
 
+    def _generation_tokens(self, task_cap: int) -> int:
+        """Apply the report setting to helper calls; zero means unbounded."""
+        if self.max_report_tokens <= 0:
+            return 0
+        return min(max(1, int(task_cap)), self.max_report_tokens)
+
     # ------------------------------------------------------------------
     # PLAN: create research strategy
     # ------------------------------------------------------------------
@@ -412,7 +436,7 @@ class DeepResearcher:
             response = await self._llm(
                 [{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=1024,
+                max_tokens=self._generation_tokens(1024),
                 timeout=getattr(self, "planning_timeout", 90),
             )
             # Try to parse as JSON for structured plan
@@ -445,7 +469,9 @@ class DeepResearcher:
         try:
             result = await self._llm(
                 [{"role": "user", "content": prompt}],
-                temperature=0, max_tokens=20, timeout=15,
+                temperature=0,
+                max_tokens=self._generation_tokens(20),
+                timeout=self.planning_timeout,
             )
             cat = (result or "").strip().lower()
             # Clean one-word answer first.
@@ -508,7 +534,7 @@ class DeepResearcher:
             response = await self._llm(
                 [{"role": "user", "content": prompt}],
                 temperature=0.5,
-                max_tokens=4096,
+                max_tokens=self._generation_tokens(4096),
                 timeout=getattr(self, "query_timeout", 120),
             )
             queries = self._parse_json_array(response)
@@ -607,11 +633,14 @@ class DeepResearcher:
         return all_findings
 
     def _reserve_privacy_tool_call(self) -> bool:
-        """Reserve one Tor search/fetch call, or return false at the hard cap."""
+        """Reserve one Tor search/fetch call, honoring the user's call cap."""
         if not is_privacy_mode():
             return True
         try:
-            enforce_tool_call_budget(self.privacy_tool_calls_used)
+            enforce_tool_call_budget(
+                self.privacy_tool_calls_used,
+                limit=self.privacy_tool_limit,
+            )
         except CapabilityDenied:
             logger.warning("Privacy Workspace research call budget exhausted")
             return False
@@ -648,8 +677,27 @@ class DeepResearcher:
                         return results
                 except Exception as e:
                     raised = True
-                    logger.warning(f"Research search: {prov} failed: {e}")
-                    self._last_search_error = f"{prov}: {e}"
+                    if is_privacy_mode():
+                        logger.warning(
+                            "Privacy research Tor search failed closed: %s",
+                            type(e).__name__,
+                        )
+                        self._last_search_error = f"{prov}: {type(e).__name__}"
+                    else:
+                        logger.warning(f"Research search: {prov} failed: {e}")
+                        self._last_search_error = f"{prov}: {e}"
+
+            if is_privacy_mode():
+                browser_rows = await self._browser_search_fallback(query)
+                if browser_rows:
+                    if "brave-windscribe" not in self.providers_used:
+                        self.providers_used.append("brave-windscribe")
+                    return browser_rows
+                self._last_search_error = (
+                    "Tor returned no results and the managed browser fallback "
+                    "returned no results"
+                )
+                return []
             # Every provider ran but none returned results. If none of them
             # raised, record an actionable reason here — otherwise this empty
             # path leaves `_last_search_error` unset and the caller surfaces a
@@ -663,9 +711,62 @@ class DeepResearcher:
                 )
             return []
         except Exception as e:
-            logger.error(f"Search failed for '{query}': {e}")
-            self._last_search_error = str(e)
+            if is_privacy_mode():
+                logger.warning(
+                    "Privacy research search failed closed: %s", type(e).__name__
+                )
+                self._last_search_error = (
+                    "Tor and managed browser search were unavailable "
+                    f"({type(e).__name__})"
+                )
+            else:
+                logger.error(f"Search failed for '{query}': {e}")
+                self._last_search_error = str(e)
             return []
+
+    async def _browser_search_fallback(self, query: str) -> List[Dict]:
+        """Use isolated Brave/Windscribe once, only after the Tor path failed."""
+        from services.search.privacy_browser import PrivacyBrowserFallback
+
+        return await PrivacyBrowserFallback().search(query, 10)
+
+    async def _browser_fetch_fallback(self, url: str) -> Dict:
+        """Fetch once through isolated Brave/Windscribe after a Tor failure."""
+        from services.search.privacy_browser import PrivacyBrowserFallback
+
+        return await PrivacyBrowserFallback().fetch(
+            url, max_content_chars=self.max_content_chars
+        )
+
+    async def _fetch_page(self, url: str) -> Dict:
+        """Fetch through Tor first, then the managed VPN browser or fail closed."""
+        try:
+            from src.search import fetch_webpage_content
+
+            page = await asyncio.to_thread(fetch_webpage_content, url, 10)
+        except Exception as exc:
+            if is_privacy_mode():
+                logger.warning(
+                    "Privacy research Tor fetch failed closed: %s",
+                    type(exc).__name__,
+                )
+                page = {}
+            else:
+                raise
+
+        if isinstance(page, dict) and page.get("success") and page.get("content"):
+            return page
+        if not is_privacy_mode():
+            return page if isinstance(page, dict) else {}
+
+        try:
+            return await self._browser_fetch_fallback(url)
+        except Exception as exc:
+            logger.warning(
+                "Privacy research managed browser fetch failed closed: %s",
+                type(exc).__name__,
+            )
+            return {}
 
     async def _fetch_and_extract(self, url: str, question: str,
                                  title: str) -> Optional[Dict]:
@@ -674,8 +775,7 @@ class DeepResearcher:
         self._emit(phase="reading", url=url, title=display,
                    total_sources=len(self.urls_fetched))
         try:
-            from src.search import fetch_webpage_content
-            page = await asyncio.to_thread(fetch_webpage_content, url, 10)
+            page = await self._fetch_page(url)
         except Exception as e:
             logger.warning(f"Failed to fetch {url}: {e}")
             return None
@@ -700,7 +800,7 @@ class DeepResearcher:
                     untrusted_context_message("webpage", content),
                 ],
                 temperature=0.2,
-                max_tokens=2048,
+                max_tokens=self._generation_tokens(2048),
                 timeout=self.extraction_timeout,
             )
             parsed = self._parse_json_object(response)
@@ -748,12 +848,12 @@ class DeepResearcher:
             return await self._llm(
                 [{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=self.max_report_tokens,
+                max_tokens=self._generation_tokens(self.max_report_tokens),
                 # Synthesis is a heavy generation call like the final report
                 # (which gets 180s); a slow local model (e.g. a 20B served from
                 # LM Studio) routinely needs >60s for it. The old 60s cap timed
                 # out mid-stream and discarded the round's findings (#1551).
-                timeout=180,
+                timeout=self.extraction_timeout,
             )
         except Exception as e:
             logger.error(f"Synthesis failed: {e}")
@@ -770,14 +870,15 @@ class DeepResearcher:
             question=question,
             report=report,
             round_num=round_num,
-            max_rounds=self.max_rounds,
+            max_rounds=(self.max_rounds if self.max_rounds > 0 else "no fixed cap"),
         )
 
         try:
             response = await self._llm(
                 [{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=128,
+                max_tokens=self._generation_tokens(128),
+                timeout=self.planning_timeout,
             )
             # Reasoning models prepend a <think>...</think> block — strip it
             # before checking for YES/NO, otherwise the answer always looks
@@ -809,8 +910,8 @@ class DeepResearcher:
             result = await self._llm(
                 [{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=self.max_report_tokens,
-                timeout=180,
+                max_tokens=self._generation_tokens(self.max_report_tokens),
+                timeout=self.extraction_timeout,
             )
 
             # If report is too short, ask the LLM to expand it
@@ -832,8 +933,8 @@ class DeepResearcher:
                         },
                     ],
                     temperature=0.4,
-                    max_tokens=self.max_report_tokens,
-                    timeout=180,
+                    max_tokens=self._generation_tokens(self.max_report_tokens),
+                    timeout=self.extraction_timeout,
                 )
                 if len(expanded.split()) > len(result.split()):
                     return expanded
@@ -855,7 +956,13 @@ class DeepResearcher:
                 pass
 
     def _time_exceeded(self) -> bool:
-        return (time.time() - self._start_time) > self.max_time
+        return self.max_time > 0 and (time.time() - self._start_time) > self.max_time
+
+    def _round_numbers(self):
+        """Yield research rounds; zero means the model decides when to stop."""
+        if self.max_rounds <= 0:
+            return itertools.count(1)
+        return range(1, self.max_rounds + 1)
 
     # _strip_think_tags removed — use research_utils.strip_thinking()
 

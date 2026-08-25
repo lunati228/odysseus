@@ -722,6 +722,15 @@ def _set_user_time_from_request(request: Request) -> None:
         pass
 
 
+def _coerce_agent_max_rounds(raw, *, default: int) -> int:
+    """Normalize agent steps; zero means no round-count ceiling."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = int(default)
+    return max(0, min(value, 200))
+
+
 def setup_chat_routes(
     session_manager,
     chat_handler,
@@ -2280,11 +2289,10 @@ def setup_chat_routes(
                         _tool_budget = 0
                     # Per-message round cap from settings; clamp defensively in
                     # case settings.json was hand-edited to a bad value.
-                    try:
-                        _max_rounds = int(get_setting("agent_max_rounds", _DEFAULT_ROUNDS) or _DEFAULT_ROUNDS)
-                    except (TypeError, ValueError):
-                        _max_rounds = _DEFAULT_ROUNDS
-                    _max_rounds = max(1, min(_max_rounds, 200))
+                    _max_rounds = _coerce_agent_max_rounds(
+                        get_setting("agent_max_rounds", _DEFAULT_ROUNDS),
+                        default=_DEFAULT_ROUNDS,
+                    )
 
                     _forced_tools = None
                     if _search_enabled:

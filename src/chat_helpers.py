@@ -83,6 +83,8 @@ def is_vision_model(model_name: str) -> bool:
 _PROVIDER_FINGERPRINT_TTL = 60.0
 # (host, port) -> (models_list | None, expiry); list = LM Studio, None = not LM Studio.
 _lmstudio_models_cache: dict = {}
+# (host, port) -> (props | None, expiry); dict = llama.cpp, None = not llama.cpp.
+_llamacpp_props_cache: dict = {}
 
 
 def _is_local_host(host: Optional[str]) -> bool:
@@ -156,11 +158,74 @@ def lmstudio_supports_vision(url: str, model: str) -> Optional[bool]:
     return None
 
 
+def _probe_llamacpp_props(url: str) -> Optional[dict]:
+    """Return a local llama.cpp server's ``/props`` payload when recognized.
+
+    The OpenAI-compatible model alias is not a reliable vision signal: custom
+    quantizations often omit ``vision``/``VL`` from their names even while an
+    mmproj is loaded. Modern llama.cpp exposes the authoritative answer as
+    ``modalities.vision``. Only local/LAN endpoints are probed.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if not _is_local_host(host):
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    key = (host.lower(), parsed.port)
+    now = time.time()
+    cached = _llamacpp_props_cache.get(key)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    authority = display_host if parsed.port is None else f"{display_host}:{parsed.port}"
+    probe_url = f"{parsed.scheme}://{authority}/props"
+    try:
+        response = httpx.get(probe_url, timeout=1.0)
+    except Exception:
+        return None
+    try:
+        payload = response.json() if response.is_success else {}
+    except Exception:
+        payload = {}
+
+    modalities = payload.get("modalities") if isinstance(payload, dict) else None
+    recognized = (
+        isinstance(modalities, dict)
+        and "vision" in modalities
+        and (
+            bool(payload.get("model_alias"))
+            or bool(payload.get("model_path"))
+            or isinstance(payload.get("default_generation_settings"), dict)
+        )
+    )
+    props = payload if recognized else None
+    _llamacpp_props_cache[key] = (props, now + _PROVIDER_FINGERPRINT_TTL)
+    return props
+
+
+def llamacpp_supports_vision(url: str) -> Optional[bool]:
+    """Read llama.cpp's authoritative ``modalities.vision`` flag."""
+    props = _probe_llamacpp_props(url)
+    if not props:
+        return None
+    modalities = props.get("modalities")
+    if isinstance(modalities, dict) and "vision" in modalities:
+        return bool(modalities.get("vision"))
+    return None
+
+
 def model_supports_vision(model_name: str, endpoint_url: str = "") -> bool:
-    """Whether a model accepts images, using the endpoint's reported
-    capability when available (LM Studio) and falling back to name-based
-    detection otherwise."""
+    """Whether a model accepts images, preferring endpoint-reported support."""
     if endpoint_url:
+        try:
+            advertised = llamacpp_supports_vision(endpoint_url)
+        except Exception:
+            advertised = None
+        if advertised is not None:
+            return advertised
         try:
             advertised = lmstudio_supports_vision(endpoint_url, model_name or "")
         except Exception:

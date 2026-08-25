@@ -32,6 +32,65 @@ def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, n))
 
 
+def _resolve_research_max_time(
+    explicit: object,
+    *,
+    configured: object,
+) -> int:
+    """Resolve the research runtime; zero means no internal wall-clock cap."""
+    raw = configured if explicit is None else explicit
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 1800
+    if value <= 0:
+        return 0
+    return min(value, 86_400)
+
+
+def _resolve_research_hard_timeout(
+    explicit: object,
+    *,
+    configured: object,
+) -> Optional[int]:
+    """Match the hard timeout to the requested runtime; zero disables it."""
+    value = _resolve_research_max_time(explicit, configured=configured)
+    if value <= 0:
+        return None
+    return max(60, value)
+
+
+def _research_generation_tokens(task_cap: int, *, configured: object) -> int:
+    """Cap helper output only when the operator configured a positive limit."""
+    try:
+        limit = int(configured)
+    except (TypeError, ValueError):
+        limit = 16_384
+    if limit <= 0:
+        return 0
+    return min(max(1, int(task_cap)), limit)
+
+
+def _configured_research_tokens(task_cap: int) -> int:
+    from src.settings import get_setting
+
+    return _research_generation_tokens(
+        task_cap,
+        configured=get_setting("research_max_tokens", 16_384),
+    )
+
+
+def _configured_research_timeout(key: str, default: int) -> int:
+    from src.settings import get_setting
+
+    return _bounded_int(
+        get_setting(key, default),
+        default=default,
+        minimum=15,
+        maximum=3600,
+    )
+
+
 def _format_probe_failure(model: str, exc: Exception) -> str:
     """Turn a failed research model probe into a user-facing message."""
     detail = getattr(exc, "detail", None)
@@ -157,9 +216,12 @@ class ResearchHandler:
                     f"Conversation:\n{convo}"
                 }],
                 temperature=0.1,
-                max_tokens=200,
+                max_tokens=_configured_research_tokens(200),
                 headers=llm_headers,
-                timeout=15,
+                timeout=_configured_research_timeout(
+                    "research_query_timeout_seconds",
+                    90,
+                ),
                 max_retries=1,
             )
             query = strip_thinking(response).strip().strip('"\'')
@@ -184,9 +246,12 @@ class ResearchHandler:
                 model=llm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=1024,
+                max_tokens=_configured_research_tokens(1024),
                 headers=llm_headers,
-                timeout=30,
+                timeout=_configured_research_timeout(
+                    "research_planning_timeout_seconds",
+                    90,
+                ),
                 max_retries=1,
             )
             response = strip_thinking(response)
@@ -243,14 +308,14 @@ class ResearchHandler:
         query: str,
         llm_endpoint: str,
         llm_model: str,
-        max_time: int = 300,
+        max_time: Optional[int] = None,
         hard_timeout: int = None,
         llm_headers: dict = None,
         on_complete: callable = None,
         prior_report: str = "",
         prior_findings: list = None,
         prior_urls: set = None,
-        max_rounds: int = 20,
+        max_rounds: int = 0,
         search_provider: str = None,
         category: str = None,
         extraction_timeout: int = None,
@@ -265,27 +330,25 @@ class ResearchHandler:
         if _research_json_path(session_id) is None:
             raise ValueError("Invalid research session_id")
 
-        # Resolve the hard wall-clock timeout from settings when the caller
+        # Resolve both the engine's cooperative time limit and the hard
+        # wall-clock timeout from settings when the caller did not pin one.
         # didn't pin one. Local / edge models routinely need more than the
         # old 600s default to finish a deep-research synthesis. A setting of
         # 0 disables the cap entirely (unlimited run); any other value is
         # bounded to [60, 86400] so a misconfigured settings.json can't
         # explode into a multi-day hang.
+        from src.settings import get_setting
+        try:
+            raw_timeout = int(get_setting("research_run_timeout_seconds", 1800))
+        except (TypeError, ValueError):
+            raw_timeout = 1800
+        requested_max_time = max_time
+        max_time = _resolve_research_max_time(max_time, configured=raw_timeout)
         if hard_timeout is None:
-            from src.settings import get_setting
-            try:
-                raw_timeout = int(get_setting("research_run_timeout_seconds", 1800))
-            except (TypeError, ValueError):
-                raw_timeout = 1800
-            if raw_timeout <= 0:
-                hard_timeout = None  # 0 = no wall-clock cap (asyncio.wait_for timeout=None)
-            else:
-                hard_timeout = _bounded_int(
-                    raw_timeout,
-                    default=1800,
-                    minimum=60,
-                    maximum=86400,
-                )
+            hard_timeout = _resolve_research_hard_timeout(
+                requested_max_time,
+                configured=raw_timeout,
+            )
 
         # Cancel any existing research for this session
         if session_id in self._active_tasks:
@@ -727,9 +790,12 @@ class ResearchHandler:
                 model=model,
                 messages=[{"role": "user", "content": "hi"}],
                 temperature=0,
-                max_tokens=5,
+                max_tokens=_configured_research_tokens(5),
                 headers=headers,
-                timeout=15,
+                timeout=_configured_research_timeout(
+                    "research_planning_timeout_seconds",
+                    90,
+                ),
                 max_retries=1,
             )
             logger.info(f"Endpoint probe OK: {model}")

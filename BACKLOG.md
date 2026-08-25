@@ -6,11 +6,11 @@ Privacy Workspace is not approved for sensitive research.
 
 ## Session wrap-up
 
-No delivery item remains from the 2026-08-24 model/runtime work. The accepted
-machine-local model profile and its measured evidence are stored only in an
-ignored local handoff; public documentation records the behavioral contract,
-not the operator's hardware or paths. The disposable audit account was reset
-to first-run state. Only the privacy-acceptance gates below remain open.
+No delivery item remains from the model/runtime or 2026-08-25 main-agent work.
+The accepted machine-local model profile and its measured evidence remain
+operator-local; public documentation records the behavioral contract, not the
+operator's hardware or paths. Only the privacy-acceptance gates below remain
+open.
 
 ## Privacy acceptance gates
 

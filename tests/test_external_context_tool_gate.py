@@ -379,6 +379,46 @@ def test_browser_mcp_result_taints_and_only_static_reads_remain_available():
     assert context.decision_for("python").allowed is False
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "get_workspace",
+        "glob",
+        "grep",
+        "ls",
+        "read_file",
+        "web_search",
+        "web_fetch",
+        "trigger_research",
+        "mcp__builtin_browser__browser_navigate",
+        "mcp__builtin_browser__browser_click",
+    ],
+)
+def test_privacy_reads_and_browsing_never_prompt(monkeypatch, tool_name):
+    import src.privacy_mode as privacy_mode
+
+    monkeypatch.setattr(privacy_mode, "PROFILE", "privacy")
+    context = ToolRunSecurityContext(external_untrusted_context_seen=True)
+
+    assert context.decision_for(tool_name).allowed is True
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["bash", "python", "manage_bg_jobs", "write_file", "edit_file", "apply_patch"],
+)
+def test_privacy_commands_and_workspace_changes_always_prompt(monkeypatch, tool_name):
+    import src.privacy_mode as privacy_mode
+
+    monkeypatch.setattr(privacy_mode, "PROFILE", "privacy")
+    fresh = ToolRunSecurityContext()
+    resumed = ToolRunSecurityContext(approval_gate_bypassed=True)
+
+    assert fresh.decision_for(tool_name).allowed is False
+    assert resumed.decision_for(tool_name).allowed is False
+    assert "Privacy Workspace" in fresh.decision_for(tool_name).reason
+
+
 def test_prefetched_external_message_initializes_taint():
     messages = [
         {

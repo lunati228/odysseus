@@ -413,6 +413,21 @@ def build_uploaded_file_manifest(att_ids: list, upload_handler, owner: Optional[
         if not isinstance(info, dict):
             continue
 
+        # Images are already delivered to a vision-capable main model as an
+        # OpenAI-compatible image_url content block. Advertising the same PNG
+        # or JPEG as a text file invites the agent to call read_file on raw
+        # binary, which both loses the pixels and can flood later LLM rounds.
+        name = str(info.get("name") or info.get("original_name") or "")
+        mime = str(info.get("mime") or info.get("content_type") or "")
+        is_image = mime.lower().startswith("image/")
+        if not is_image and hasattr(upload_handler, "is_image_file"):
+            try:
+                is_image = bool(upload_handler.is_image_file(name, mime))
+            except Exception:
+                is_image = False
+        if is_image:
+            continue
+
         path = info.get("path")
         if path:
             try:

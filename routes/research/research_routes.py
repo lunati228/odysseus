@@ -479,12 +479,15 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
 
     class ResearchStartRequest(BaseModel):
         query: str
-        # max_rounds=0 means "Auto" — let the AI decide when to stop, capped at 20.
+        # max_rounds=0 means Auto with no fixed round ceiling; the model's
+        # completeness decision, empty-result guard, or user cancellation stops it.
         max_rounds: int = Field(default=0, ge=0, le=20)
         search_provider: Optional[str] = None
         endpoint_id: Optional[str] = None
         model: Optional[str] = None
-        max_time: int = Field(default=300, ge=60, le=1800)
+        # None inherits research_run_timeout_seconds; 0 explicitly disables
+        # both the cooperative and hard run caps.
+        max_time: Optional[int] = Field(default=None, ge=0, le=86400)
         extraction_timeout: Optional[int] = Field(default=None, ge=15, le=3600)
         extraction_concurrency: Optional[int] = Field(default=None, ge=1, le=12)
         category: Optional[str] = None
@@ -558,8 +561,9 @@ def setup_research_routes(research_handler, session_manager=None) -> APIRouter:
             if body.model:
                 ep_model = body.model
 
-        # max_rounds=0 → "Auto", let AI decide; pass 20 as the safety cap.
-        effective_max_rounds = body.max_rounds if body.max_rounds > 0 else 20
+        # max_rounds=0 means no fixed ceiling; DeepResearcher still asks the
+        # model whether the report is complete after the minimum rounds.
+        effective_max_rounds = body.max_rounds
         research_handler.start_research(
             session_id=session_id,
             query=body.query,

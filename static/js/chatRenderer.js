@@ -705,8 +705,9 @@ export function getModelInfo(modelName) {
 }
 
 function _fmtCtx(n) {
-  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-  return Math.round(n / 1000) + 'K';
+  const kib = 1024;
+  if (n >= kib * kib) return (n / (kib * kib)).toFixed(1).replace(/\.0$/, '') + 'M';
+  return Math.round(n / kib) + 'K';
 }
 
 /**
@@ -756,22 +757,25 @@ export function applyModelColor(roleEl, modelName) {
       if (_provLabel) html += '<div><span class="ctx-label">Provider</span> ' + uiModule.esc(_provLabel) + '</div>';
       // Show static context initially, then fetch real from server
       const _realCtx = window._realContextLengths && window._realContextLengths[modelName];
-      if (_realCtx) {
-        html += '<div><span class="ctx-label">Context</span> ' + _fmtCtx(_realCtx) + ' tokens';
-        if (info && info.ctx && info.ctx !== _realCtx) html += ' <span style="opacity:0.35">(spec: ' + _fmtCtx(info.ctx) + ')</span>';
-        html += '</div>';
-      } else if (info && info.ctx) {
-        html += '<div><span class="ctx-label">Context</span> <span id="_ctx-val">' + _fmtCtx(info.ctx) + ' tokens</span></div>';
+      const _initialCtx = _realCtx || (info && info.ctx);
+      if (_initialCtx) {
+        html += '<div><span class="ctx-label">Context</span> <span id="_ctx-val">' + _fmtCtx(_initialCtx) + ' tokens';
+        if (_realCtx && info && info.ctx && info.ctx !== _realCtx) {
+          html += ' <span style="opacity:0.35">(spec: ' + _fmtCtx(info.ctx) + ')</span>';
+        }
+        html += '</span></div>';
       }
       // Fetch real context from server async
-      if (!_realCtx && window.sessionModule) {
+      // Always refresh: a local server can restart with a different context
+      // while retaining the same model alias, making the old model-key cache stale.
+      if (window.sessionModule) {
         const _sid = window.sessionModule.getCurrentSessionId();
         if (_sid) {
           fetch('/api/session/' + _sid + '/context_info').then(r => r.ok ? r.json() : null).then(d => {
             if (d && d.context_length) {
               if (!window._realContextLengths) window._realContextLengths = {};
               window._realContextLengths[modelName] = d.context_length;
-              const el = document.getElementById('_ctx-val');
+              const el = popup.querySelector('#_ctx-val');
               if (el) {
                 el.innerHTML = _fmtCtx(d.context_length) + ' tokens';
                 if (info && info.ctx && info.ctx !== d.context_length) {

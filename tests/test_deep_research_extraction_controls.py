@@ -1,5 +1,6 @@
 import asyncio
 import json
+import itertools
 import sys
 import time
 import types
@@ -110,6 +111,49 @@ def test_extraction_timeout_allows_long_local_model_runs():
     )
 
     assert researcher.extraction_timeout == 1800
+
+
+def test_zero_research_time_is_unlimited():
+    researcher = DeepResearcher(
+        llm_endpoint="http://local.test/v1/chat/completions",
+        llm_model="local-model",
+        max_time=0,
+    )
+    researcher._start_time = time.time() - 86_400
+
+    assert researcher._time_exceeded() is False
+
+
+def test_zero_research_rounds_has_no_fixed_ceiling():
+    researcher = DeepResearcher(
+        llm_endpoint="http://local.test/v1/chat/completions",
+        llm_model="local-model",
+        max_rounds=0,
+    )
+
+    assert list(itertools.islice(researcher._round_numbers(), 3)) == [1, 2, 3]
+
+
+def test_zero_report_token_setting_removes_internal_generation_caps():
+    researcher = DeepResearcher(
+        llm_endpoint="http://local.test/v1/chat/completions",
+        llm_model="local-model",
+        max_report_tokens=0,
+    )
+
+    assert researcher._generation_tokens(20) == 0
+    assert researcher._generation_tokens(4096) == 0
+
+
+def test_positive_report_token_setting_preserves_smaller_task_caps():
+    researcher = DeepResearcher(
+        llm_endpoint="http://local.test/v1/chat/completions",
+        llm_model="local-model",
+        max_report_tokens=2048,
+    )
+
+    assert researcher._generation_tokens(128) == 128
+    assert researcher._generation_tokens(4096) == 2048
 
 
 @pytest.mark.asyncio

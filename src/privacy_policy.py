@@ -63,6 +63,7 @@ PRIVACY_ALLOWED: frozenset[str] = frozenset(
     {
         "tor-search",     # search queries through the Tor transport
         "tor-fetch",      # bounded page retrieval through the Tor transport
+        "vpn-browser",    # isolated Brave through the required VPN proxy
         "local-model",    # numeric-loopback llama.cpp endpoint
         "local-storage",  # reads/writes confined to the private vault
     }
@@ -201,16 +202,42 @@ def describe_policy(*, profile: Optional[str] = None) -> dict[str, object]:
 #: each excerpt small limits how much of the context one hostile page owns.
 MAX_EVIDENCE_CHARS = 20_000
 MAX_QUERY_CHARS = 400
-MAX_TOOL_CALLS_PER_TURN = 12
+MAX_TOOL_CALLS_PER_TURN = 12  # legacy/default positive cap; operator setting 0 is unlimited
 
-#: The complete model-directed tool authority in Privacy Workspace.
-#:
-#: ``web_search`` and ``web_fetch`` route through the Tor-only leaf helpers.
-#: ``ask_user`` and ``update_plan`` produce UI/control events and carry no
-#: host, account, filesystem, subprocess, or extension authority. Unknown
-#: future tools are denied because membership, not a denylist, is the rule.
+#: Read-only workspace tools are silent but are separately confined to the
+#: selected workspace by ``src.tool_execution``.
+PRIVACY_AGENT_READ_TOOLS: frozenset[str] = frozenset(
+    {"get_workspace", "glob", "grep", "ls", "read_file"}
+)
+
+#: These tools remain visible so Privacy Workspace can act like a coding
+#: agent. Each proposed invocation needs a sealed, exact user approval before
+#: dispatch; an approval never grants access to a different command/path.
+PRIVACY_AGENT_APPROVAL_TOOLS: frozenset[str] = frozenset(
+    {"apply_patch", "bash", "edit_file", "manage_bg_jobs", "python", "write_file"}
+)
+
+#: Tools that must have an active selected workspace. ``get_workspace`` is
+#: intentionally excluded because it is the safe way to discover that no
+#: workspace is selected yet.
+PRIVACY_AGENT_WORKSPACE_BOUND_TOOLS: frozenset[str] = frozenset(
+    (PRIVACY_AGENT_READ_TOOLS - {"get_workspace"}) | PRIVACY_AGENT_APPROVAL_TOOLS
+)
+
+#: The complete model-directed tool authority in Privacy Workspace. Tor web
+#: tools and Deep Research use the fail-closed privacy transports; the built-in
+#: browser prefix below is the isolated Brave + authenticated VPN fallback.
+#: Unknown future tools remain denied because membership is the rule.
 PRIVACY_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset(
-    {"web_search", "web_fetch", "ask_user", "update_plan"}
+    {
+        "ask_user",
+        "trigger_research",
+        "update_plan",
+        "web_fetch",
+        "web_search",
+    }
+    | PRIVACY_AGENT_READ_TOOLS
+    | PRIVACY_AGENT_APPROVAL_TOOLS
 )
 
 PRIVACY_BROWSER_MCP_PREFIX = "mcp__builtin_browser__"
@@ -224,6 +251,11 @@ def is_privacy_allowed_agent_tool(tool_name: object) -> bool:
         tool_name in PRIVACY_AGENT_ALLOWED_TOOLS
         or tool_name.startswith(PRIVACY_BROWSER_MCP_PREFIX)
     )
+
+
+def privacy_agent_tool_requires_approval(tool_name: object) -> bool:
+    """Return whether Privacy Workspace must seal and approve this action."""
+    return isinstance(tool_name, str) and tool_name in PRIVACY_AGENT_APPROVAL_TOOLS
 
 
 class QueryTooLong(CapabilityDenied):
@@ -296,8 +328,12 @@ def enforce_tool_call_budget(
     *,
     limit: int = MAX_TOOL_CALLS_PER_TURN,
 ) -> None:
-    """Bound tool calls per research turn so an injected loop cannot run away."""
-    if used >= limit:
+    """Enforce a positive call cap; zero or negative means user-unlimited."""
+    try:
+        normalized_limit = int(limit)
+    except (TypeError, ValueError):
+        normalized_limit = 0
+    if normalized_limit > 0 and used >= normalized_limit:
         raise CapabilityDenied("tor-search", "privacy")
 
 
@@ -322,16 +358,14 @@ def privacy_tool_call_limit(
     *,
     profile: Optional[str] = None,
 ) -> int:
-    """Return the agent call cap, enforcing a fixed privacy maximum.
+    """Normalize the user's call cap; ``0`` remains unlimited in every profile.
 
-    Standard Workspace keeps ``0`` as unlimited and otherwise preserves its
-    configured positive integer. Privacy Workspace ignores a wider/unlimited
-    setting and uses the fixed security bound.
+    Privacy Workspace still restricts *which* tools can be offered and executed.
+    The call count is an operator preference, not an authority boundary.
     """
-    if is_privacy_mode(profile):
-        return MAX_TOOL_CALLS_PER_TURN
+    del profile  # retained for API compatibility
     try:
-        return int(configured)
+        return max(0, int(configured))
     except (TypeError, ValueError):
         return 0
 

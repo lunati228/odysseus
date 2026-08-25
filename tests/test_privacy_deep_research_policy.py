@@ -3,7 +3,7 @@
 Fetched evidence may inform the local report, but it must not become authority
 over a later network request.  Privacy Workspace therefore generates every
 search query from the original question and pre-fetch plan only, validates the
-model output before scheduling it, and shares one fixed budget across Tor
+model output before scheduling it, and shares one configured budget across Tor
 search and fetch calls for the entire run.
 """
 from __future__ import annotations
@@ -77,12 +77,13 @@ async def test_private_query_generation_refuses_overlong_output_before_schedulin
 
 
 class _BudgetedResearcher(DeepResearcher):
-    def __init__(self):
+    def __init__(self, privacy_tool_limit=MAX_TOOL_CALLS_PER_TURN):
         super().__init__(
             llm_endpoint="http://127.0.0.1:18085/v1/chat/completions",
             llm_model="local-model",
             max_urls_per_round=4,
             extraction_concurrency=12,
+            privacy_tool_limit=privacy_tool_limit,
         )
         self.search_calls = []
         self.fetch_calls = []
@@ -112,6 +113,21 @@ async def test_private_search_and_fetch_share_one_run_wide_call_budget(privacy_p
     assert len(researcher.fetch_calls) == MAX_TOOL_CALLS_PER_TURN - 4
     assert len(findings) == len(researcher.fetch_calls)
     assert researcher.privacy_tool_calls_used == MAX_TOOL_CALLS_PER_TURN
+
+
+@pytest.mark.asyncio
+async def test_private_search_and_fetch_can_be_unlimited_when_configured(privacy_profile):
+    researcher = _BudgetedResearcher(privacy_tool_limit=0)
+    researcher._start_time = time.time()
+
+    findings = await researcher._search_and_extract(
+        ["one", "two", "three", "four"], "question"
+    )
+
+    assert len(researcher.search_calls) == 4
+    assert len(researcher.fetch_calls) == 16
+    assert len(findings) == 16
+    assert researcher.privacy_tool_calls_used == 20
 
 
 @pytest.mark.asyncio

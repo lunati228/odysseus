@@ -76,6 +76,12 @@ def test_no_rounds_exhausted_on_normal_finish(monkeypatch):
     assert not any(e.get("type") == "rounds_exhausted" for e in events), events
 
 
+def test_zero_round_limit_allows_unlimited_agent_steps(monkeypatch):
+    _patch_common(monkeypatch)
+    events = _run_loop(monkeypatch, "All done, here is your answer.", max_rounds=0)
+    assert not any(e.get("type") == "rounds_exhausted" for e in events), events
+
+
 def test_emits_intent_nudge_exhausted_when_cap_is_exhausted(monkeypatch):
     _patch_common(monkeypatch)
 

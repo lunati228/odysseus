@@ -8,6 +8,7 @@ The LLM decides when to use tools by writing fenced code blocks.
 
 import asyncio
 import collections
+import itertools
 import json
 import re
 import time
@@ -689,7 +690,9 @@ Fetch and read the text content of a SPECIFIC URL the user names (e.g. "check ex
 ```read_file
 <file path>
 ```
-Read a file and return its contents.""",
+Read a UTF-8 text file and return its contents. Binary images, audio, video,
+PDFs, archives, and office documents are refused; use their attachment or
+document representation instead.""",
 
     "write_file": """\
 ```write_file
@@ -1237,7 +1240,7 @@ def _uploaded_files_context_message(uploaded_files: Optional[List[Dict]]) -> Opt
         lines.append(f"- ... {len(uploaded_files) - 20} more upload(s) omitted from this manifest")
     lines.extend([
         "",
-        "The attachment contents may already be in the latest user message. If an attachment is marked truncated or omitted, read its listed path with `read_file` when that tool is available. Do not say uploaded files are undiscoverable when they are listed here.",
+        "The attachment contents may already be in the latest user message. Use `read_file` only for listed text/code files that are marked truncated or omitted. Never use it for image, audio, video, PDF, archive, or office-document binary. Do not say uploaded files are undiscoverable when they are listed here.",
     ])
     return untrusted_context_message(
         "current chat uploaded files",
@@ -2264,7 +2267,9 @@ def _recent_context_for_retrieval(messages: List[Dict], max_user: int = 3, max_c
 _PRIVACY_AGENT_NETWORK_GUIDANCE = """\
 ## Privacy Workspace network rules (IMPORTANT)
 - You are in the Privacy Workspace. ALL web traffic is routed through the Tor network automatically by the backend. `web_search` and `web_fetch` never touch the user's direct internet connection, and there is NO direct fallback.
-- Native tools are limited to `web_search`, `web_fetch`, `ask_user`, and `update_plan`. There is NO shell, Python, curl, or scraping tool.
+- Web browsing and read-only file tools do not need approval. File tools are confined to the selected workspace; they cannot read outside it.
+- Shell/Python commands and file changes are available, but every exact command or change must be approved by the user before it runs. Never claim approval was granted until the approval result is returned.
+- `trigger_research` uses the same local model and Tor-only research transport. It does not load another copy of the model.
 - Some sites block Tor or require JavaScript. Common failures you will see:
   - Reddit JSON/search endpoints often return HTTP 403 through Tor.
   - Pages that return a missing or non-allowlisted content type are rejected as `ContentTypeNotAllowed` or `BlockedByPrivacyPolicy`.
@@ -4933,7 +4938,12 @@ async def stream_agent_loop(
         )
         _approved_result_injected = True
 
-    for round_num in range(1, max_rounds + 1):
+    round_numbers = (
+        itertools.count(1)
+        if max_rounds <= 0
+        else range(1, max_rounds + 1)
+    )
+    for round_num in round_numbers:
         round_response = ""
         round_reasoning = ""  # reasoning_content deltas (DeepSeek-thinking, vLLM --reasoning-parser)
         native_tool_calls = []  # populated if model uses function calling

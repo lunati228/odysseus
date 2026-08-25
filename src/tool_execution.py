@@ -625,12 +625,43 @@ async def execute_tool_block(
             "NO_TOOL_SECURITY_CONTEXT"
         )
 
+    tool_name = getattr(block, "tool_type", None)
+    from src.privacy_mode import is_privacy_mode
+    from src.privacy_policy import (
+        PRIVACY_AGENT_WORKSPACE_BOUND_TOOLS,
+        privacy_agent_tool_requires_approval,
+    )
+
+    privacy_active = is_privacy_mode()
+    privacy_approval_required = bool(
+        privacy_active and privacy_agent_tool_requires_approval(tool_name)
+    )
+    if (
+        privacy_active
+        and tool_name in PRIVACY_AGENT_WORKSPACE_BOUND_TOOLS
+        and not workspace
+    ):
+        return (
+            f"{tool_name}: BLOCKED",
+            {
+                "error": "Select a workspace before using local file or command tools.",
+                "exit_code": 1,
+                "blocked": True,
+                "policy": "privacy_workspace_required",
+            },
+        )
+
     approval_claimed = False
     if exact_approval is not None:
         if (
             not isinstance(security_context, ToolRunSecurityContext)
-            or not security_context.external_untrusted_context_seen
-            or not exact_approval.pending.external_untrusted_context_seen
+            or (
+                not privacy_approval_required
+                and (
+                    not security_context.external_untrusted_context_seen
+                    or not exact_approval.pending.external_untrusted_context_seen
+                )
+            )
         ):
             return (
                 f"{getattr(block, 'tool_type', None)}: BLOCKED",
@@ -693,6 +724,18 @@ async def execute_tool_block(
                     "policy": "exact_tool_approval",
                 },
             )
+
+    if privacy_approval_required and not approval_claimed:
+        return (
+            f"{tool_name}: APPROVAL REQUIRED",
+            {
+                "error": "Privacy Workspace requires an exact user approval for this action.",
+                "exit_code": 1,
+                "blocked": True,
+                "approval_required": True,
+                "policy": "privacy_exact_approval",
+            },
+        )
 
     if isinstance(security_context, ToolRunSecurityContext) and not approval_claimed:
         decision = security_context.decision_for(

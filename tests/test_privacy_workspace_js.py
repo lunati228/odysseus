@@ -26,10 +26,12 @@ class FakeElement {{
     this.dataset = {{}};
     this.attributes = {{}};
     this.listeners = {{}};
+    this.queries = {{}};
   }}
   setAttribute(name, value) {{ this.attributes[name] = String(value); }}
   removeAttribute(name) {{ delete this.attributes[name]; }}
   addEventListener(type, callback) {{ this.listeners[type] = callback; }}
+  querySelector(selector) {{ return this.queries[selector] || null; }}
   click() {{
     if (!this.disabled && this.listeners.click) this.listeners.click({{ type: 'click' }});
   }}
@@ -43,7 +45,22 @@ const ids = [
   'privacy-workspace-switch-label',
 ];
 const elements = Object.fromEntries(ids.map((id) => [id, new FakeElement()]));
-const fakeDocument = {{ getElementById: (id) => elements[id] || null }};
+const mirrorElements = {{
+  control: new FakeElement(),
+  label: new FakeElement(),
+  transport: new FakeElement(),
+  button: new FakeElement(),
+  targetLabel: new FakeElement(),
+}};
+mirrorElements.control.queries['[data-privacy-workspace-label]'] = mirrorElements.label;
+mirrorElements.control.queries['[data-privacy-workspace-transport]'] = mirrorElements.transport;
+mirrorElements.control.queries['[data-privacy-workspace-switch]'] = mirrorElements.button;
+mirrorElements.control.queries['[data-privacy-workspace-switch-label]'] = mirrorElements.targetLabel;
+const fakeDocument = {{
+  getElementById: (id) => elements[id] || null,
+  querySelectorAll: (selector) => selector === '[data-privacy-workspace-control]'
+    ? [mirrorElements.control] : [],
+}};
 const storageTrap = new Proxy({{}}, {{
   get() {{ throw new Error('workspace module must not access browser storage'); }}
 }});
@@ -118,6 +135,50 @@ console.log(JSON.stringify({
             },
         }
     ]
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="node binary not on PATH")
+def test_compact_sidebar_mirror_tracks_status_and_switches_workspace():
+    result = _run_node(
+        """
+const payload = {
+  profile: 'privacy',
+  label: 'Privacy Workspace',
+  counterpart_url: 'http://127.0.0.1:7000/',
+  transport: { required: true, ready: true, label: 'Tor' },
+  data_isolated: true,
+  session_migration: false,
+  disabled_capabilities: [],
+};
+await mountPrivacyWorkspace({
+  document: fakeDocument,
+  fetchImpl: async () => ({ ok: true, json: async () => payload }),
+  navigate,
+});
+mirrorElements.button.click();
+console.log(JSON.stringify({
+  profile: mirrorElements.control.dataset.profile,
+  state: mirrorElements.control.dataset.state,
+  label: mirrorElements.label.textContent,
+  transport: mirrorElements.transport.textContent,
+  buttonLabel: mirrorElements.button.attributes['aria-label'],
+  title: mirrorElements.button.attributes.title,
+  navigations,
+}));
+"""
+    )
+
+    assert result == {
+        "profile": "privacy",
+        "state": "ready",
+        "label": "Privacy Workspace",
+        "transport": "Tor ready",
+        "buttonLabel": "Switch to Standard Workspace",
+        "title": (
+            "Privacy Workspace · Tor ready · Switch to Standard Workspace"
+        ),
+        "navigations": ["http://127.0.0.1:7000/"],
+    }
 
 
 @pytest.mark.skipif(not HAS_NODE, reason="node binary not on PATH")

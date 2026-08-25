@@ -16,9 +16,14 @@ decision.
 | 2026-08-24 | upstream integration | Merged the current upstream/dev tree and preserved the fork's privacy routing and policy changes. |
 | 2026-08-24 | installed-runtime acceptance | Accepted a machine-local Qwen profile with xhigh reasoning and GPU-resident execution. Exact model, cache, context, device, memory, and benchmark details are retained only in an ignored local handoff. |
 | 2026-08-24 | live workflow acceptance | Gemma and Qwen each passed identity, manager/UI lifecycle, Tor search, and exact-approved Brave + Windscribe navigation. Qwen also passed low/medium/xhigh persistence and restart checks. |
+| 2026-08-25 | main-agent completion | Added user-unlimited agent/research counters, workspace-confined silent reads, exact approval for commands/file changes, Tor-first managed VPN-browser research fallback, authoritative llama.cpp vision detection, binary-safe attachments, live manager-reported context display, and the compact workspace shield. |
 
 ## Verification boundary at this handoff
 
+- The 2026-08-25 affected release slice recorded 430 passes and 1 inherited
+  SQLAlchemy warning. Privacy-root tests were run from an off-repository system
+  temporary directory, as required by the profile boundary; no full-suite
+  rerun was performed.
 - The broad post-merge regression run recorded 773 passes, 1 intentional skip,
   1 inherited SQLAlchemy warning, and 88 JavaScript subtests in 42.28 seconds.
   The final run restricted to files changed by the fork recorded 525 passes,
@@ -42,8 +47,9 @@ storage residue, cryptographic protection, or privacy certification.
   are not recorded in tracked files.
 - Qwen xhigh execution completed both short and long-context acceptance checks
   without a manager-imposed output-token ceiling.
-- Final Qwen agent workflows passed Tor-only `web_search` and exact-approved
-  Brave navigation to Example Domain with no terminal errors.
+- Final Qwen agent workflows passed Tor-only `web_search`; the current research
+  path automatically reserves one managed Brave + Windscribe navigation only
+  after Tor fails and never falls through to a direct client.
 
 Do not use Qwen 3.8 as a delegated agent. It is the installed user model; use
 another owner-authorized provider for delegated engineering or research work.

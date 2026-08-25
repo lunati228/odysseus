@@ -16,6 +16,34 @@ _CODENAV_SKIP_DIRS = frozenset({
 })
 _CODENAV_MAX_HITS = 200
 _CODENAV_MAX_LINE = 400
+_BINARY_PREFIXES = (
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",
+    b"GIF87a",
+    b"GIF89a",
+    b"%PDF-",
+    b"PK\x03\x04",
+    b"RIFF",
+)
+
+
+class _BinaryFileError(ValueError):
+    pass
+
+
+def _looks_binary(sample: bytes) -> bool:
+    """Conservatively reject binary data before it can enter an LLM prompt."""
+    if not sample:
+        return False
+    if sample.startswith(_BINARY_PREFIXES) or b"\x00" in sample:
+        return True
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    allowed_controls = {8, 9, 10, 12, 13, 27}
+    controls = sum(byte < 32 and byte not in allowed_controls for byte in sample)
+    return controls / len(sample) > 0.05
 
 
 def _glob_to_regex(pat: str) -> "re.Pattern":
@@ -149,6 +177,9 @@ class ReadFileTool:
             return {"error": f"read_file: {e}", "exit_code": 1}
         try:
             def _read():
+                with open(path, "rb") as probe:
+                    if _looks_binary(probe.read(8192)):
+                        raise _BinaryFileError(path)
                 if offset > 0 or limit > 0:
                     start = max(offset, 1)
                     out, n, budget = [], 0, MAX_READ_CHARS
@@ -168,6 +199,14 @@ class ReadFileTool:
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
                     return f.read(MAX_READ_CHARS + 1)
             data = await asyncio.to_thread(_read)
+        except _BinaryFileError:
+            return {
+                "error": (
+                    "read_file: binary file; use the image attachment, audio, "
+                    "or document tool instead"
+                ),
+                "exit_code": 1,
+            }
         except FileNotFoundError:
             return {"error": f"read_file: {path}: not found", "exit_code": 1}
         except PermissionError:

@@ -274,6 +274,50 @@ def test_build_uploaded_file_manifest_hides_paths_read_file_cannot_open(monkeypa
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_build_uploaded_file_manifest_omits_images_from_text_file_tools(monkeypatch):
+    root = _manifest_test_dir("manifest-image")
+    try:
+        upload_dir = root / "uploads"
+        upload_dir.mkdir()
+        image = upload_dir / "diagram.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        notes = upload_dir / "notes.txt"
+        notes.write_text("hello", encoding="utf-8")
+
+        import src.settings as settings
+
+        monkeypatch.setattr(
+            settings,
+            "get_setting",
+            lambda key: [str(upload_dir)] if key == "tool_path_extra_roots" else None,
+        )
+        handler = _ManifestUploadHandler(upload_dir, {
+            "image": {
+                "id": "image",
+                "name": "diagram.png",
+                "mime": "image/png",
+                "path": str(image),
+                "owner": "alice",
+            },
+            "notes": {
+                "id": "notes",
+                "name": "notes.txt",
+                "mime": "text/plain",
+                "path": str(notes),
+                "owner": "alice",
+            },
+        })
+
+        manifest = build_uploaded_file_manifest(
+            ["image", "notes"], handler, owner="alice"
+        )
+
+        assert [item["id"] for item in manifest] == ["notes"]
+        assert manifest[0]["mime"] == "text/plain"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 @pytest.mark.parametrize("name,expected", [
     # 24h format (the bug this PR fixes)
     ("deepseek-v4-flash 14:05:33", True),

@@ -255,8 +255,8 @@ def build_effective_tool_policy(
             reasons=MappingProxyType(dict(reasons)),
             mode="privacy",
             # Only the built-in browser MCP (Brave + Windscribe fallback) is
-            # permitted; schema filtering + dispatcher allowlist keep every
-            # other MCP server hidden and denied.
+            # permitted. Native workspace actions remain separately confined
+            # and approval-gated by the dispatcher.
             disable_mcp=False,
         )
 

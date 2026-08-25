@@ -1,5 +1,8 @@
-"""Tests for LM Studio vision-capability passthrough: reading capabilities.vision
-from the native /api/v1/models endpoint, with no probing of cloud providers."""
+"""Tests for local endpoint vision-capability passthrough.
+
+LM Studio reports through ``/api/v1/models`` and llama.cpp reports through
+``/props``. Cloud providers must never be probed by either detector.
+"""
 import pytest
 
 from src import chat_helpers
@@ -78,6 +81,65 @@ class TestLmStudioSupportsVision:
         assert calls["n"] == 0
 
 
+class TestLlamaCppSupportsVision:
+    URL = "http://127.0.0.1:18085/v1/chat/completions"
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        chat_helpers._llamacpp_props_cache.clear()
+        yield
+        chat_helpers._llamacpp_props_cache.clear()
+
+    def test_vision_true_from_props_modalities(self, monkeypatch):
+        monkeypatch.setattr(
+            chat_helpers.httpx,
+            "get",
+            lambda url, timeout=None: _FakeResponse({
+                "model_alias": "custom-name-without-vision-keyword",
+                "modalities": {"vision": True, "audio": False},
+                "default_generation_settings": {"n_ctx": 184320},
+            }),
+        )
+
+        assert chat_helpers.llamacpp_supports_vision(self.URL) is True
+
+    def test_explicit_false_from_props_is_authoritative(self, monkeypatch):
+        monkeypatch.setattr(
+            chat_helpers.httpx,
+            "get",
+            lambda url, timeout=None: _FakeResponse({
+                "model_alias": "vision-looking-name",
+                "modalities": {"vision": False},
+                "default_generation_settings": {"n_ctx": 4096},
+            }),
+        )
+
+        assert chat_helpers.llamacpp_supports_vision(self.URL) is False
+
+    def test_unrecognized_props_payload_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            chat_helpers.httpx,
+            "get",
+            lambda url, timeout=None: _FakeResponse({"detail": "not llama.cpp"}),
+        )
+
+        assert chat_helpers.llamacpp_supports_vision(self.URL) is None
+
+    def test_remote_endpoint_is_never_probed(self, monkeypatch):
+        calls = {"n": 0}
+
+        def tracking_get(url, timeout=None):
+            calls["n"] += 1
+            return _FakeResponse({"modalities": {"vision": True}})
+
+        monkeypatch.setattr(chat_helpers.httpx, "get", tracking_get)
+
+        assert chat_helpers.llamacpp_supports_vision(
+            "https://api.openai.com/v1/chat/completions"
+        ) is None
+        assert calls["n"] == 0
+
+
 # ════════════════════════════════════════════════════════════
 # model_supports_vision — endpoint capability wins, name is fallback
 # ════════════════════════════════════════════════════════════
@@ -89,6 +151,7 @@ class TestModelSupportsVision:
         # Name has no vision keyword, but the endpoint advertises vision=True.
         monkeypatch.setattr(chat_helpers, "is_vision_model", lambda n: False)
         monkeypatch.setattr(chat_helpers, "lmstudio_supports_vision", lambda url, m: True)
+        monkeypatch.setattr(chat_helpers, "llamacpp_supports_vision", lambda url: None)
         assert chat_helpers.model_supports_vision("qwen3.6-27b-finetune",
                                                   "http://localhost:1234/v1/chat/completions") is True
 
@@ -100,5 +163,16 @@ class TestModelSupportsVision:
     def test_falls_back_to_name_when_endpoint_unknown(self, monkeypatch):
         # Endpoint doesn't advertise (None) → name heuristic decides.
         monkeypatch.setattr(chat_helpers, "lmstudio_supports_vision", lambda url, m: None)
+        monkeypatch.setattr(chat_helpers, "llamacpp_supports_vision", lambda url: None)
         assert chat_helpers.model_supports_vision("qwen2-vl-7b", "http://host/v1") is True
         assert chat_helpers.model_supports_vision("plain-llm", "http://host/v1") is False
+
+    def test_llamacpp_props_override_name_heuristic(self, monkeypatch):
+        monkeypatch.setattr(chat_helpers, "is_vision_model", lambda n: False)
+        monkeypatch.setattr(chat_helpers, "lmstudio_supports_vision", lambda url, m: None)
+        monkeypatch.setattr(chat_helpers, "llamacpp_supports_vision", lambda url: True)
+
+        assert chat_helpers.model_supports_vision(
+            "huihui-qwen3.8-27b-abliterated-q6-k-l",
+            "http://127.0.0.1:18085/v1/chat/completions",
+        ) is True

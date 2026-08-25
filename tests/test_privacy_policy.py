@@ -302,7 +302,7 @@ _CLASSIFICATIONS = frozenset(
 )
 
 # Direct HTTP/socket call sites per file, as of the privacy-workspace branch:
-# **128 sites across 48 files**.
+# **129 sites across 48 files**.
 #
 # This is now a *classification* table, not a bare count. Every site is
 # accounted for, and the containment guarantee is
@@ -359,7 +359,8 @@ _RECORDED_EGRESS_SURFACE: dict[str, tuple[int, tuple[str, ...]]] = {
     "src/agent_tools/model_interaction_tools.py": (1, ("chokepoint-only",)),
     "src/ai_interaction.py": (5, ("chokepoint-only",)),
     "src/builtin_actions.py": (1, ("loopback-only",)),            # internal_api_base
-    "src/chat_helpers.py": (1, ("chokepoint-only",)),
+    # Local endpoint capability probes: LM Studio /models and llama.cpp /props.
+    "src/chat_helpers.py": (2, ("chokepoint-only",)),
     "src/chatgpt_subscription.py": (5, ("capability-guarded",)),  # cloud-models
     "src/chroma_client.py": (1, ("chokepoint-only",)),
     "src/cookbook_serve_lifecycle.py": (2, ("chokepoint-only",)),
@@ -492,6 +493,6 @@ def test_the_tor_transport_is_the_only_egress_path_the_policy_allows():
     one-line addition in the policy module.
     """
     assert PRIVACY_ALLOWED == frozenset(
-        {"tor-search", "tor-fetch", "local-model", "local-storage"}
+        {"tor-search", "tor-fetch", "vpn-browser", "local-model", "local-storage"}
     )
     assert "direct-http" in PRIVACY_DENIED

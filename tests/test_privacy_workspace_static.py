@@ -12,19 +12,28 @@ STYLE = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
 
 def _control_markup(source: str) -> str:
     match = re.search(
-        r'<aside\b[^>]*id="privacy-workspace-control"[\s\S]*?</aside>',
+        r'<(?P<tag>aside|div)\b[^>]*id="privacy-workspace-control"[\s\S]*?'
+        r'</(?P=tag)>',
         source,
     )
     assert match, "privacy workspace control is missing"
     return match.group(0)
 
 
-def test_control_is_top_level_and_outside_collapsible_navigation():
+def test_main_control_is_compact_and_immediately_above_rail_settings():
     index_control = INDEX.index('id="privacy-workspace-control"')
-    assert INDEX.index("<body>") < index_control < INDEX.index('id="app-loader"')
-    assert index_control < INDEX.index('id="icon-rail"')
-    assert index_control < INDEX.index('id="sidebar"')
+    assert INDEX.index('id="icon-rail"') < index_control
+    assert index_control < INDEX.index('id="rail-settings"')
+    between = INDEX[index_control:INDEX.index('id="rail-settings"')]
+    assert "privacy-workspace-switch" in between
+    assert "privacy-workspace-status-dot" in between
 
+    mirror = INDEX.index('data-privacy-workspace-control')
+    assert INDEX.index('class="user-bar-actions"') < mirror
+    assert mirror < INDEX.index('id="user-bar-settings"')
+
+
+def test_login_control_stays_top_level():
     login_control = LOGIN.index('id="privacy-workspace-control"')
     assert LOGIN.index("<body>") < login_control < LOGIN.index('<main class="card">')
 
@@ -54,29 +63,20 @@ def test_both_pages_load_the_dedicated_module():
     assert script in LOGIN
 
 
-def test_main_styles_keep_control_fixed_focusable_and_mobile_reachable():
-    assert re.search(
-        r"\.privacy-workspace-control\s*\{[^}]*position:\s*fixed",
-        STYLE,
-        re.S,
+def test_main_styles_make_control_compact_focusable_and_stateful():
+    compact = re.search(
+        r"\.privacy-workspace-compact\s*\{(?P<body>[^}]*)}", STYLE, re.S
     )
+    assert compact
+    assert "position: fixed" not in compact.group("body")
     assert re.search(
         r"\.privacy-workspace-switch:focus-visible\s*\{[^}]*outline:",
         STYLE,
         re.S,
     )
-    mobile = re.search(r"@media\s*\(max-width:\s*768px\)\s*\{(?P<body>[\s\S]+)", STYLE)
-    assert mobile
-    assert ".privacy-workspace-control" in mobile.group("body")
     assert re.search(
-        r"\.privacy-workspace-current\s*\{[^}]*grid-area:\s*identity",
+        r"\.privacy-workspace-status-dot\s*\{[^}]*border-radius:\s*50%",
         STYLE,
-        re.S,
-    )
-    assert ".privacy-workspace-switch-prefix" in mobile.group("body")
-    assert re.search(
-        r"\.privacy-workspace-switch\s*\{[^}]*min-height:\s*44px",
-        mobile.group("body"),
         re.S,
     )
 

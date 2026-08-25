@@ -641,6 +641,28 @@ class ToolRunSecurityContext:
             self.external_untrusted_context_seen = True
 
     def decision_for(self, tool_name: Any, content: Any = None) -> ToolGateDecision:
+        # Privacy Workspace has a simpler operator-facing boundary. Its Tor web
+        # tools, isolated browser, and workspace readers never prompt. Commands
+        # and file mutations always require an exact approval, even if a prior
+        # approval bypassed the general post-untrusted-context gate.
+        from src.privacy_mode import is_privacy_mode
+
+        if is_privacy_mode():
+            from src.privacy_policy import (
+                is_privacy_allowed_agent_tool,
+                privacy_agent_tool_requires_approval,
+            )
+
+            if privacy_agent_tool_requires_approval(tool_name):
+                return ToolGateDecision(
+                    False,
+                    (
+                        "Privacy Workspace requires your approval before "
+                        "running this command or changing workspace files."
+                    ),
+                )
+            if is_privacy_allowed_agent_tool(tool_name):
+                return ToolGateDecision(True)
         if self.approval_gate_bypassed:
             return ToolGateDecision(True)
         if not self.external_untrusted_context_seen:

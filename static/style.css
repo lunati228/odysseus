@@ -41189,117 +41189,59 @@ body.theme-frosted .modal {
   .compare-pane { min-height: 60dvh; }
 }
 
-/* Workspace identity stays outside the collapsible navigation and above app overlays. */
-.privacy-workspace-control {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  z-index: 100000;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "identity switch"
-    "transport switch";
+/* Compact workspace switch beside the existing settings controls. */
+.privacy-workspace-compact {
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 2px 10px;
-  max-width: min(420px, calc(100vw - 24px));
-  padding: 8px;
-  border: 1px solid var(--border, #3a3f4b);
-  border-radius: 8px;
-  background: var(--bg, #17191f);
-  color: var(--fg, #f3f4f6);
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
-  font: 600 12px/1.3 system-ui, sans-serif;
+  justify-content: center;
+  flex: 0 0 auto;
 }
 
-.privacy-workspace-current {
-  grid-area: identity;
-  min-width: 0;
+.privacy-workspace-compact .privacy-workspace-switch {
+  position: relative;
 }
 
-.privacy-workspace-eyebrow {
-  display: block;
-  color: var(--color-muted, #a7adba);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.privacy-workspace-current {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.privacy-workspace-transport {
-  grid-area: transport;
-  color: var(--color-muted, #a7adba);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.privacy-workspace-control[data-state="ready"] .privacy-workspace-transport::before {
-  content: "\2713  ";
-}
-
-.privacy-workspace-control[data-state="unavailable"] .privacy-workspace-transport::before,
-.privacy-workspace-control[data-state="unknown"] .privacy-workspace-transport::before {
-  content: "! ";
-}
-
-.privacy-workspace-switch {
-  grid-area: switch;
-  min-height: 36px;
-  padding: 6px 10px;
-  border: 1px solid var(--border, #4d5361);
-  border-radius: 6px;
-  background: var(--accent, #356df3);
-  color: #fff;
-  font: inherit;
-  line-height: 1.2;
-  cursor: pointer;
-}
-
-.privacy-workspace-switch:hover:not(:disabled) {
+.privacy-workspace-compact .privacy-workspace-switch:hover:not(:disabled) {
   filter: brightness(1.08);
 }
 
 .privacy-workspace-switch:focus-visible {
   outline: 3px solid #ffd166;
-  outline-offset: 3px;
+  outline-offset: 2px;
 }
 
 .privacy-workspace-switch:disabled {
   cursor: not-allowed;
-  opacity: 0.66;
+  opacity: 0.55;
 }
 
-@media (max-width: 768px) {
-  .privacy-workspace-control {
-    top: 8px;
-    right: auto;
-    left: 8px;
-    max-width: calc(100vw - 16px);
-  }
+.privacy-workspace-status-dot {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--sidebar-bg, var(--bg));
+  border-radius: 50%;
+  background: #8a909c;
+  pointer-events: none;
+}
 
-  .privacy-workspace-eyebrow,
-  .privacy-workspace-switch-prefix {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
+.privacy-workspace-control[data-state="ready"] .privacy-workspace-status-dot {
+  background: #3fb950;
+}
 
-  .privacy-workspace-switch {
-    min-height: 44px;
-  }
+.privacy-workspace-control[data-state="unavailable"] .privacy-workspace-status-dot {
+  background: #d29922;
+}
+
+.privacy-workspace-control[data-state="unknown"] .privacy-workspace-status-dot {
+  background: #f85149;
+}
+
+.privacy-workspace-user .privacy-workspace-switch {
+  color: var(--fg);
 }
 
 /* ── Settings navigation / finder ────────────────────────────── */
