@@ -20,6 +20,26 @@ function getElements(documentRef) {
   return Object.values(elements).every(Boolean) ? elements : null;
 }
 
+export function browserTimezoneHeaders({
+  document: documentRef,
+  now = () => new Date(),
+  resolveTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+} = {}) {
+  const control = documentRef?.getElementById?.('privacy-workspace-control');
+  // Fail closed while the profile is unknown. Browser timezone metadata is
+  // sent only after the backend has positively identified Standard Workspace.
+  if (control?.dataset?.profile !== 'standard') return {};
+
+  try {
+    return {
+      'X-Tz-Offset': String(-now().getTimezoneOffset()),
+      'X-Tz-Name': String(resolveTimeZone() || ''),
+    };
+  } catch (_) {
+    return {};
+  }
+}
+
 function validatedCounterpart(rawUrl, profile) {
   if (typeof rawUrl !== 'string' || !rawUrl) return null;
   try {

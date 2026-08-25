@@ -11,9 +11,16 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Dict, Optional
 
+from src.privacy_mode import is_privacy_mode
+
 
 _USER_TZ_OFFSET_MIN: ContextVar[Optional[int]] = ContextVar("user_tz_offset_min", default=None)
 _USER_TZ_NAME: ContextVar[Optional[str]] = ContextVar("user_tz_name", default=None)
+
+
+def _privacy_uses_utc_only() -> bool:
+    """Keep browser timezone/location hints out of Privacy Workspace prompts."""
+    return is_privacy_mode()
 
 
 def set_user_tz_offset(offset_min) -> None:
@@ -83,6 +90,8 @@ def user_timezone() -> tzinfo:
     A valid IANA name wins over x-tz-offset. The offset is a fixed number and
     can disagree with the name (wrong sign, stale client); the name carries DST.
     """
+    if _privacy_uses_utc_only():
+        return timezone.utc
     zone = _zoneinfo_from_name()
     if zone is not None:
         return zone
@@ -129,6 +138,19 @@ def current_datetime_prompt(now_utc: Optional[datetime] = None) -> str:
         utc_now = now_utc.replace(tzinfo=timezone.utc)
     else:
         utc_now = now_utc.astimezone(timezone.utc)
+
+    if _privacy_uses_utc_only():
+        tomorrow = utc_now + timedelta(days=1)
+        return (
+            "## Current date and time\n"
+            f"Today is {_date_label(utc_now)} ({utc_now.strftime('%Y-%m-%d')}) in UTC; "
+            f"current UTC time is {utc_now.strftime('%H:%M')}.\n"
+            f"Tomorrow is {_date_label(tomorrow)} ({tomorrow.strftime('%Y-%m-%d')}) in UTC.\n"
+            "Treat relative dates and times as UTC unless the user explicitly provides "
+            "a timezone. Do not infer the user's timezone or location.\n"
+            "When scheduling calendar events or tasks, use UTC unless the user explicitly "
+            "provides another timezone.\n\n"
+        )
 
     local_now = now_user_local(utc_now)
     tomorrow = local_now + timedelta(days=1)

@@ -16,7 +16,7 @@ HAS_NODE = shutil.which("node") is not None
 def _run_node(case_body: str) -> dict:
     module_url = json.dumps(MODULE.as_uri())
     script = f"""
-import {{ mountPrivacyWorkspace }} from {module_url};
+import {{ browserTimezoneHeaders, mountPrivacyWorkspace }} from {module_url};
 
 class FakeElement {{
   constructor() {{
@@ -190,6 +190,42 @@ console.log(JSON.stringify({
         "targetLabel": "Privacy Workspace",
         "navigations": ["http://127.0.0.1:7001/"],
     }
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="node binary not on PATH")
+def test_privacy_profile_does_not_read_or_send_browser_timezone():
+    result = _run_node(
+        """
+elements['privacy-workspace-control'].dataset.profile = 'privacy';
+let clockRead = false;
+let zoneRead = false;
+const headers = browserTimezoneHeaders({
+  document: fakeDocument,
+  now: () => { clockRead = true; throw new Error('privacy must not read clock offset'); },
+  resolveTimeZone: () => { zoneRead = true; throw new Error('privacy must not read timezone'); },
+});
+console.log(JSON.stringify({ headers, clockRead, zoneRead }));
+"""
+    )
+
+    assert result == {"headers": {}, "clockRead": False, "zoneRead": False}
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="node binary not on PATH")
+def test_standard_profile_keeps_browser_timezone_headers():
+    result = _run_node(
+        """
+elements['privacy-workspace-control'].dataset.profile = 'standard';
+const headers = browserTimezoneHeaders({
+  document: fakeDocument,
+  now: () => ({ getTimezoneOffset: () => -120 }),
+  resolveTimeZone: () => 'Europe/Berlin',
+});
+console.log(JSON.stringify(headers));
+"""
+    )
+
+    assert result == {"X-Tz-Offset": "120", "X-Tz-Name": "Europe/Berlin"}
 
 
 @pytest.mark.skipif(not HAS_NODE, reason="node binary not on PATH")

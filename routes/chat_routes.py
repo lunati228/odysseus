@@ -706,11 +706,14 @@ def _set_user_time_from_request(request: Request) -> None:
     and running tools for this request. It is not persisted or logged.
     """
     try:
-        tz_offset = request.headers.get("x-tz-offset")
-        tz_name = request.headers.get("x-tz-name")
         from src.user_time import clear_user_time_context, set_user_tz_name, set_user_tz_offset
 
         clear_user_time_context()
+        from src.privacy_mode import is_privacy_mode
+        if is_privacy_mode():
+            return
+        tz_offset = request.headers.get("x-tz-offset")
+        tz_name = request.headers.get("x-tz-name")
         if tz_offset is not None:
             set_user_tz_offset(tz_offset)
         if tz_name:

@@ -36,6 +36,7 @@ import {
 } from './chatModelProvenance.js';
 import { createTerminalStreamError, isRecoverableStreamError } from './chatStreamErrors.js';
 import { loadPanel } from './panels.js';
+import { browserTimezoneHeaders } from './privacyWorkspace.js';
 
   const RESEARCH_TIMEOUT_MS = 360000;
   const DEFAULT_TIMEOUT_MS = 120000;
@@ -2077,19 +2078,12 @@ import { loadPanel } from './panels.js';
         el('research-toggle').checked = false;
       }
 
-      // User's current UTC offset in minutes (east of UTC). Threaded into
-      // the agent so natural-language times like "today at 9pm" are
-      // interpreted in YOUR timezone, not the server's.
-      const _tzOffsetMin = -new Date().getTimezoneOffset();
-      const _tzName = (() => {
-        try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; }
-        catch { return ''; }
-      })();
+      const _timezoneHeaders = browserTimezoneHeaders({ document });
       _sendPerf.mark('chat_stream_post_begin');
       const res = await fetch(`${API_BASE}/api/chat_stream`, {
         method: 'POST',
         body: fd,
-        headers: { 'X-Tz-Offset': String(_tzOffsetMin), 'X-Tz-Name': _tzName },
+        headers: _timezoneHeaders,
         signal: abortCtrl.signal
       });
       _sendPerf.mark('chat_stream_headers');
