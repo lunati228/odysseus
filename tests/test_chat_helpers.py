@@ -439,6 +439,47 @@ def test_auto_name_session_passes_session_fallback_to_task_resolver(monkeypatch)
     assert updates == [("session-1", "Focused Fix")]
 
 
+def test_auto_name_session_does_not_replace_active_local_model_cache(monkeypatch):
+    """A title must not make a side request to the active one-slot backend."""
+    import src.llm_core as llm_core
+    import src.task_endpoint as task_endpoint
+
+    llm_calls = []
+
+    def fake_resolve_task_endpoint(
+        fallback_url=None,
+        fallback_model=None,
+        fallback_headers=None,
+        owner=None,
+    ):
+        return fallback_url, fallback_model, fallback_headers
+
+    async def fake_llm_call(*args, **kwargs):
+        llm_calls.append((args, kwargs))
+        return "This call would evict the conversation cache"
+
+    monkeypatch.setattr(task_endpoint, "resolve_task_endpoint", fake_resolve_task_endpoint)
+    monkeypatch.setattr(llm_core, "llm_call_async", fake_llm_call)
+
+    sess = SimpleNamespace(
+        id="session-local",
+        owner="alice",
+        endpoint_url="http://127.0.0.1:18085/v1/chat/completions",
+        model="local-model",
+        headers={},
+        history=[SimpleNamespace(role="user", content="Please fix the endpoint fallback bug.")],
+    )
+    updates = []
+    session_manager = SimpleNamespace(
+        update_session_name=lambda session_id, title: updates.append((session_id, title))
+    )
+
+    asyncio.run(auto_name_session(session_manager, sess))
+
+    assert llm_calls == []
+    assert updates == [("session-local", "Please fix the endpoint fallback bug")]
+
+
 def test_spinoff_detected_from_dict_history():
     sess = SimpleNamespace(history=[
         {"role": "system", "metadata": {"research_spinoff_from": "rp-2"}},

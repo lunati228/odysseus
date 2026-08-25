@@ -251,6 +251,32 @@ def needs_auto_name(name: str) -> bool:
     return False
 
 
+def _deterministic_session_title(first_message: str, max_length: int = 72) -> str:
+    """Build a bounded title without consuming a local model slot."""
+    title = re.sub(r"\s+", " ", str(first_message or "")).strip()
+    title = re.sub(r"^[#>*\-]+\s*", "", title).strip(" \t\r\n\"'")
+    if len(title) > max_length:
+        title = title[: max_length + 1].rsplit(" ", 1)[0] or title[:max_length]
+        title = title.rstrip(" .,:;!?-") + "…"
+    else:
+        title = title.rstrip(" .,:;!?-")
+    return title
+
+
+def _uses_active_local_backend(session_url: str, task_url: str) -> bool:
+    """Return true when a title call would share the chat's local server."""
+    try:
+        from src.endpoint_resolver import normalize_base
+        from src.model_context import is_local_endpoint
+
+        return bool(
+            is_local_endpoint(session_url)
+            and normalize_base(session_url) == normalize_base(task_url)
+        )
+    except Exception:
+        return False
+
+
 async def auto_name_session(session_manager, sess):
     """Generate a short title for a session from its first user message."""
     try:
@@ -281,23 +307,30 @@ async def auto_name_session(session_manager, sess):
             logger.debug("[auto-name] No model provided, skipping")
             return
 
-        # max_tokens big enough that reasoning models (Minimax M2,
-        # DeepSeek R1, QwQ, etc.) have headroom for <think>…</think>
-        # plus the actual title — 200 used to clip them mid-reasoning
-        # so strip_think left an empty string and no rename happened.
-        # Timeout matches: 60s gives slow local reasoners room to finish.
-        title = await llm_call_async(
-            t_url,
-            t_model,
-            [
-                {"role": "system", "content": "Generate a short title (3-6 words, no quotes) for a conversation that starts with this message. Reply with ONLY the title, nothing else. Do NOT include any thinking, reasoning, or explanation — just the title."},
-                {"role": "user", "content": first_msg},
-            ],
-            temperature=0.3,
-            max_tokens=4096,
-            headers=t_headers,
-            timeout=60,
-        )
+        if _uses_active_local_backend(sess.endpoint_url, t_url):
+            # The private runtime intentionally uses one llama.cpp slot. A tiny
+            # post-response title request on that same server replaces the
+            # conversation KV prefix and makes the next real turn prefill from
+            # scratch. Keep the useful title without touching the model.
+            title = _deterministic_session_title(first_msg)
+        else:
+            # max_tokens big enough that reasoning models (Minimax M2,
+            # DeepSeek R1, QwQ, etc.) have headroom for <think>…</think>
+            # plus the actual title — 200 used to clip them mid-reasoning
+            # so strip_think left an empty string and no rename happened.
+            # Timeout matches: 60s gives slow local reasoners room to finish.
+            title = await llm_call_async(
+                t_url,
+                t_model,
+                [
+                    {"role": "system", "content": "Generate a short title (3-6 words, no quotes) for a conversation that starts with this message. Reply with ONLY the title, nothing else. Do NOT include any thinking, reasoning, or explanation — just the title."},
+                    {"role": "user", "content": first_msg},
+                ],
+                temperature=0.3,
+                max_tokens=4096,
+                headers=t_headers,
+                timeout=60,
+            )
 
         title = title.strip().strip('"\'').strip()
         # Strip <think>/<thinking> blocks (closed, dangling, or stray tags)
