@@ -75,7 +75,7 @@ from typing import Dict
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -105,6 +105,7 @@ import bcrypt as _bcrypt
 from src.app_helpers import abs_join, serve_html_with_nonce
 from src.generated_images import GENERATED_IMAGE_HEADERS, resolve_generated_image_path
 from src.owner_identity import auth_disabled
+from src.privacy_ui_presence import privacy_ui_presence
 from starlette.responses import RedirectResponse
 
 # ========= LOGGING =========
@@ -296,6 +297,7 @@ if AUTH_ENABLED:
         "/api/auth/integrations/presets",
         "/api/health",
         "/api/privacy/status",
+        "/api/privacy/ui-presence",
         "/api/version",
         "/login",
     }
@@ -991,6 +993,57 @@ async def health_check() -> Dict[str, str]:
 async def privacy_profile_status() -> Dict[str, object]:
     """Public, non-secret identity/transport state for the fixed UI switch."""
     return build_profile_status()
+
+
+def _is_numeric_loopback_client(client) -> bool:
+    return client is not None and client.host == "127.0.0.1"
+
+
+@app.post("/api/privacy/ui-presence")
+async def privacy_ui_presence_stream(request: Request) -> StreamingResponse:
+    """Hold one anonymous HTTP stream open for each loaded Privacy tab."""
+    if (
+        not is_privacy_mode()
+        or not _is_numeric_loopback_client(request.client)
+        or request.headers.get("x-odysseus-ui-presence") != "1"
+        or request.headers.get("accept") != "text/event-stream"
+    ):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    async def stream():
+        token = object()
+        privacy_ui_presence.connect(token)
+        try:
+            yield b": connected\n\n"
+            while True:
+                await asyncio.sleep(5)
+                if await request.is_disconnected():
+                    break
+                yield b": present\n\n"
+        finally:
+            privacy_ui_presence.disconnect(token)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/privacy/ui-presence")
+async def privacy_ui_presence_status(request: Request) -> Dict[str, object]:
+    """Minimal local status consumed only by the fixed wake helper."""
+    if not is_privacy_mode():
+        raise HTTPException(status_code=404, detail="Not found")
+    if (
+        not _is_numeric_loopback_client(request.client)
+        or request.headers.get("x-odysseus-wake-helper") != "1"
+    ):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return {"profile": "privacy", "open_tabs": privacy_ui_presence.open_tabs}
 
 @app.post("/api/client-perf")
 async def client_perf(request: Request):

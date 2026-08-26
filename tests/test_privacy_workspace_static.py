@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INDEX = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
 LOGIN = (ROOT / "static" / "login.html").read_text(encoding="utf-8")
 STYLE = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+SERVICE_WORKER = (ROOT / "static" / "sw.js").read_text(encoding="utf-8")
 
 
 def _control_markup(source: str) -> str:
@@ -58,9 +59,17 @@ def test_both_pages_expose_native_accessible_workspace_controls():
 
 
 def test_both_pages_load_the_dedicated_module():
-    script = '<script type="module" src="/static/js/privacyWorkspace.js"></script>'
+    script = (
+        '<script type="module" '
+        'src="/static/js/privacyWorkspace.js?v=20260826presence1"></script>'
+    )
     assert script in INDEX
     assert script in LOGIN
+
+
+def test_privacy_root_bypasses_the_cached_shell_so_the_wake_helper_is_reached():
+    assert "url.hostname === '127.0.0.1' && url.port === '7001'" in SERVICE_WORKER
+    assert "fetch(e.request, { cache: 'no-store' })" in SERVICE_WORKER
 
 
 def test_main_styles_make_control_compact_focusable_and_stateful():

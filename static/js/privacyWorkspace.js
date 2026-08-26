@@ -3,6 +3,7 @@
 // full-page navigation only after the backend status contract is validated.
 
 const STATUS_ENDPOINT = '/api/privacy/status';
+const PRESENCE_ENDPOINT = '/api/privacy/ui-presence';
 const PROFILE_LABELS = {
   standard: 'Standard Workspace',
   privacy: 'Privacy Workspace',
@@ -97,6 +98,100 @@ export function normalizePrivacyWorkspaceStatus(payload) {
   };
 }
 
+export function privacyPresenceEndpoint(status, locationRef) {
+  if (!status || status.profile !== 'privacy' || !locationRef) return null;
+  if (
+    locationRef.protocol !== 'http:'
+    || locationRef.hostname !== '127.0.0.1'
+    || locationRef.port !== '7001'
+  ) return null;
+  return PRESENCE_ENDPOINT;
+}
+
+export function startPrivacyUiPresence({
+  status,
+  fetchImpl = globalThis.fetch?.bind(globalThis),
+  AbortControllerImpl = globalThis.AbortController,
+  locationRef = globalThis.location,
+  addEventListenerImpl = globalThis.addEventListener?.bind(globalThis),
+  setTimeoutImpl = globalThis.setTimeout?.bind(globalThis),
+  clearTimeoutImpl = globalThis.clearTimeout?.bind(globalThis),
+} = {}) {
+  const endpoint = privacyPresenceEndpoint(status, locationRef);
+  if (
+    !endpoint
+    || typeof fetchImpl !== 'function'
+    || typeof AbortControllerImpl !== 'function'
+  ) return null;
+
+  let controller = null;
+  let reconnectTimer = null;
+  let connecting = false;
+  let stopped = false;
+
+  const clearReconnect = () => {
+    if (reconnectTimer !== null && typeof clearTimeoutImpl === 'function') {
+      clearTimeoutImpl(reconnectTimer);
+    }
+    reconnectTimer = null;
+  };
+
+  const scheduleReconnect = () => {
+    if (stopped || reconnectTimer !== null || typeof setTimeoutImpl !== 'function') return;
+    reconnectTimer = setTimeoutImpl(() => {
+      reconnectTimer = null;
+      connect();
+    }, 2000);
+  };
+
+  const connect = async () => {
+    if (stopped || connecting) return;
+    connecting = true;
+    controller = new AbortControllerImpl();
+    try {
+      const response = await fetchImpl(endpoint, {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: {
+          Accept: 'text/event-stream',
+          'X-Odysseus-UI-Presence': '1',
+        },
+        signal: controller.signal,
+      });
+      if (!response?.ok || !response.body?.getReader) throw new Error('presence unavailable');
+      clearReconnect();
+      const reader = response.body.getReader();
+      while (!stopped) {
+        const result = await reader.read();
+        if (result.done) break;
+      }
+    } catch (_) {
+      // A closed tab aborts this request. Transient failures reconnect while
+      // the page still exists, without treating focus/visibility as absence.
+    } finally {
+      connecting = false;
+      controller = null;
+      scheduleReconnect();
+    }
+  };
+
+  if (typeof addEventListenerImpl === 'function') {
+    for (const eventName of ['online', 'pageshow', 'resume']) {
+      addEventListenerImpl(eventName, connect);
+    }
+  }
+  connect();
+
+  return {
+    stop() {
+      stopped = true;
+      clearReconnect();
+      if (controller && typeof controller.abort === 'function') controller.abort();
+    },
+  };
+}
+
 function showUnknown(elementGroups) {
   for (const elements of elementGroups) {
     elements.control.dataset.profile = 'unknown';
@@ -165,12 +260,13 @@ export async function mountPrivacyWorkspace({
   }
 }
 
-function mountBrowserControl() {
-  mountPrivacyWorkspace({
+async function mountBrowserControl() {
+  const status = await mountPrivacyWorkspace({
     document,
     fetchImpl: window.fetch.bind(window),
     navigate: (url) => window.location.assign(url),
   });
+  startPrivacyUiPresence({ status });
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {

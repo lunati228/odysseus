@@ -16,7 +16,12 @@ HAS_NODE = shutil.which("node") is not None
 def _run_node(case_body: str) -> dict:
     module_url = json.dumps(MODULE.as_uri())
     script = f"""
-import {{ browserTimezoneHeaders, mountPrivacyWorkspace }} from {module_url};
+import {{
+  browserTimezoneHeaders,
+  mountPrivacyWorkspace,
+  privacyPresenceEndpoint,
+  startPrivacyUiPresence,
+}} from {module_url};
 
 class FakeElement {{
   constructor() {{
@@ -287,6 +292,81 @@ console.log(JSON.stringify(headers));
     )
 
     assert result == {"X-Tz-Offset": "120", "X-Tz-Name": "Europe/Berlin"}
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="node binary not on PATH")
+def test_privacy_presence_uses_only_the_fixed_numeric_loopback_endpoint():
+    result = _run_node(
+        """
+const privacy = { profile: 'privacy' };
+const standard = { profile: 'standard' };
+const goodLocation = { protocol: 'http:', hostname: '127.0.0.1', port: '7001' };
+const wrongHost = { protocol: 'http:', hostname: 'localhost', port: '7001' };
+console.log(JSON.stringify({
+  privacy: privacyPresenceEndpoint(privacy, goodLocation),
+  standard: privacyPresenceEndpoint(standard, goodLocation),
+  wrongHost: privacyPresenceEndpoint(privacy, wrongHost),
+}));
+"""
+    )
+
+    assert result == {
+        "privacy": "/api/privacy/ui-presence",
+        "standard": None,
+        "wrongHost": None,
+    }
+
+
+@pytest.mark.skipif(not HAS_NODE, reason="node binary not on PATH")
+def test_privacy_presence_opens_one_persistent_channel_without_focus_tracking():
+    result = _run_node(
+        """
+const requests = [];
+const fetchImpl = (url, options) => {
+  requests.push({ url, options: { ...options, signal: Boolean(options.signal) } });
+  return new Promise(() => {});
+};
+class FakeAbortController {
+  constructor() { this.signal = {}; }
+  abort() {}
+}
+const listeners = [];
+const handle = startPrivacyUiPresence({
+  status: { profile: 'privacy' },
+  fetchImpl,
+  AbortControllerImpl: FakeAbortController,
+  locationRef: { protocol: 'http:', hostname: '127.0.0.1', port: '7001' },
+  addEventListenerImpl: (type) => listeners.push(type),
+  setTimeoutImpl: () => 1,
+  clearTimeoutImpl: () => {},
+});
+console.log(JSON.stringify({
+  requests,
+  listeners,
+  started: Boolean(handle),
+}));
+"""
+    )
+
+    assert result == {
+        "requests": [
+            {
+                "url": "/api/privacy/ui-presence",
+                "options": {
+                    "method": "POST",
+                    "credentials": "same-origin",
+                    "cache": "no-store",
+                    "headers": {
+                        "Accept": "text/event-stream",
+                        "X-Odysseus-UI-Presence": "1",
+                    },
+                    "signal": True,
+                },
+            }
+        ],
+        "listeners": ["online", "pageshow", "resume"],
+        "started": True,
+    }
 
 
 @pytest.mark.skipif(not HAS_NODE, reason="node binary not on PATH")

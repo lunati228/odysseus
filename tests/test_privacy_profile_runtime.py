@@ -170,6 +170,9 @@ def test_app_uses_profile_dotenv_status_route_and_startup_policy():
     assert "load_profile_dotenv(" in source
     assert '"/api/privacy/status"' in source
     assert '@app.get("/api/privacy/status")' in source
+    assert '"/api/privacy/ui-presence"' in source
+    assert '@app.post("/api/privacy/ui-presence")' in source
+    assert '@app.get("/api/privacy/ui-presence")' in source
     for capability in (
         "bg_monitor",
         "mcp_connections",

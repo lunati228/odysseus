@@ -7,7 +7,7 @@
 //   - Other static assets (images/fonts/libs): cache-first with bg refresh.
 //   - API / non-GET: never cached.
 // Bump CACHE_NAME whenever the precache list or SW logic changes.
-const CACHE_NAME = 'odysseus-v380-shared-config-image-editor-lazy-katex-mermaid';
+const CACHE_NAME = 'odysseus-v381-privacy-wake-presence';
 
 // KaTeX resolves these from its own stylesheet, so caching the CSS without them
 // gives offline math fallback glyphs instead of proper typesetting.
@@ -194,6 +194,15 @@ self.addEventListener('fetch', (e) => {
   // go to the network/static handlers below; otherwise every navigation was
   // served the app index, replacing the page the user actually asked for.
   if (e.request.mode === 'navigate' && url.pathname === '/') {
+    // The Privacy Workspace has a tiny on-demand listener on this exact
+    // numeric-loopback origin while the heavy app is stopped. A cached shell
+    // would bypass its starting page and load modules before the app exists,
+    // so this one root must always reach the local network endpoint first.
+    // Standard Workspace keeps the existing stale-while-revalidate behavior.
+    if (url.hostname === '127.0.0.1' && url.port === '7001') {
+      e.respondWith(fetch(e.request, { cache: 'no-store' }));
+      return;
+    }
     e.respondWith(
       caches.open(CACHE_NAME).then(async cache => {
         const cached = await cache.match('/');
