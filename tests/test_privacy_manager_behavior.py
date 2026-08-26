@@ -2,9 +2,9 @@
 
 ``tests/test_privacy_manager_script.py`` pins the shape of the installed
 PowerShell manager.  Its own audit
-(``docs/PRIVACY-IMPLEMENTATION-AUDIT.md``) records five gaps that the pinned
-suite cannot catch, plus one class of defect that only a real invocation can
-prove.  Both are covered here.
+(``BACKLOG-PRIVACY-WORKSPACE-FORK.md``) records limits that the pinned suite
+cannot catch, plus one class of defect that only a real invocation can prove.
+Both are covered here.
 """
 from __future__ import annotations
 

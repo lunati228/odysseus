@@ -70,7 +70,7 @@ What the message may say
 ------------------------
 For a non-loopback denial the message names the port and address family but
 **not** the host.  A denied destination is frequently a research target, and
-these messages reach the privacy log, which ``PROGRESS.md`` requires to stay
+these messages reach the privacy log, which ``README-PRIVACY-WORKSPACE-FORK.md`` requires to stay
 free of query and page content.  The full destination is kept only in the
 bounded in-memory :func:`egress_journal`, which is never written to disk and is
 what the live-capture evidence reads.

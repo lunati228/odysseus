@@ -4,7 +4,7 @@ Why this module exists
 ----------------------
 Hiding a route is not a containment guarantee.  A hidden route can still be
 reached by a helper, a background task, a tool call, or a service that never
-consults the router.  ``BACKLOG.md`` records this as PRV-003: the privacy
+consults the router.  ``BACKLOG-PRIVACY-WORKSPACE-FORK.md`` records this as PRV-003: the privacy
 profile needs one policy object that every egress-capable call site checks,
 plus a test that fails when a new unchecked call site appears.
 

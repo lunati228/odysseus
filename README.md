@@ -38,11 +38,10 @@ Open `http://localhost:7000` when the containers are healthy. The first admin pa
 
 Native installs, GPU notes, Windows/macOS instructions, HTTPS, and configuration live in the [setup guide](docs/setup.md).
 
-> **Fork work in progress:** this branch adds a separate Privacy Workspace.
-> It is not yet privacy-certified and must not be used for sensitive research
-> until its acceptance gate passes. See [the fork overview](README-FORK.md),
-> [privacy research and threat model](docs/PRIVACY-MODE-RESEARCH.md),
-> [progress](PROGRESS.md), and [open blockers](BACKLOG.md).
+> **Privacy Workspace fork:** this branch adds an experimental separate Privacy
+> Workspace. It is not privacy-certified and must not be used for sensitive
+> research. See the [fork overview](README-PRIVACY-WORKSPACE-FORK.md) and
+> [open verification gates](BACKLOG-PRIVACY-WORKSPACE-FORK.md).
 
 ## Features
 
@@ -71,12 +70,6 @@ Odysseus is a self-hosted workspace with powerful local tools. Keep auth enabled
 - Keep `LOCALHOST_BYPASS=false` outside local development.
 
 Deployment details are in the [setup guide](docs/setup.md#security-notes).
-
-"Local model" is not proof that the complete application is private. Web
-search, source fetching, extensions, updates, speech, embeddings, tools,
-telemetry, and crash reporting are independent egress surfaces. This fork's
-Privacy Workspace design and still-open verification gates are documented in
-[`docs/PRIVACY-MODE-RESEARCH.md`](docs/PRIVACY-MODE-RESEARCH.md).
 
 ## Star History
 
